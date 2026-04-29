@@ -35,6 +35,7 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 		r.Get("/trades", h.trades)
 		r.Get("/smart-money", h.smartMoney)
 		r.Get("/funding-rates", h.fundingRates)
+		r.Get("/open-orders", h.openOrders)
 		r.Get("/orders", h.orders)
 		r.Post("/orders", h.createOrder)
 		r.Post("/orders/{orderId}/cancel", h.cancelOrder)
@@ -55,7 +56,8 @@ func (h *Handler) account(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) trades(w http.ResponseWriter, r *http.Request) {
-	h.writeResult(w, h.service.TradeHistory(r.Context()), nil)
+	trades, err := h.service.TradeHistory(r.Context(), r.URL.Query().Get("userAddress"), intQuery(r, "limit"))
+	h.writeResult(w, trades, err)
 }
 
 func (h *Handler) smartMoney(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +68,11 @@ func (h *Handler) smartMoney(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fundingRates(w http.ResponseWriter, r *http.Request) {
 	rates, err := h.service.FundingRates(r.Context(), r.URL.Query().Get("symbol"), intQuery(r, "limit"))
 	h.writeResult(w, rates, err)
+}
+
+func (h *Handler) openOrders(w http.ResponseWriter, r *http.Request) {
+	orders, err := h.service.OpenOrders(r.Context(), r.URL.Query().Get("userAddress"))
+	h.writeResult(w, orders, err)
 }
 
 func (h *Handler) orders(w http.ResponseWriter, r *http.Request) {

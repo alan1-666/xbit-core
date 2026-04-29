@@ -70,6 +70,44 @@ func (p *HTTPProvider) Account(ctx context.Context, userAddress string) (Account
 	return accountFromClearinghouseState(userAddress, raw, p.now().UTC()), nil
 }
 
+func (p *HTTPProvider) TradeHistory(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error) {
+	if strings.TrimSpace(userAddress) == "" {
+		return nil, fmt.Errorf("userAddress is required for http provider trade history")
+	}
+	if limit <= 0 || limit > 2000 {
+		limit = 100
+	}
+	var raw []map[string]any
+	if err := p.info(ctx, map[string]any{"type": "userFills", "user": userAddress}, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]TradeHistory, 0, minInt(limit, len(raw)))
+	for _, item := range raw {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, tradeHistoryFromFill(item))
+	}
+	return out, nil
+}
+
+func (p *HTTPProvider) OpenOrders(ctx context.Context, userAddress string) ([]OpenOrder, error) {
+	userAddress = strings.TrimSpace(userAddress)
+	if userAddress == "" {
+		return nil, fmt.Errorf("userAddress is required for http provider open orders")
+	}
+	var raw []map[string]any
+	if err := p.info(ctx, map[string]any{"type": "frontendOpenOrders", "user": userAddress}, &raw); err != nil {
+		return nil, err
+	}
+	now := p.now().UTC()
+	out := make([]OpenOrder, 0, len(raw))
+	for _, item := range raw {
+		out = append(out, openOrderFromHTTP(userAddress, p.Name(), item, now))
+	}
+	return out, nil
+}
+
 func (p *HTTPProvider) Sign(_ context.Context, _ string, _ string, _ map[string]any) (ProviderActionResult, error) {
 	return ProviderActionResult{}, fmt.Errorf("http provider cannot create Hyperliquid signatures; pass signed exchange payloads from wallet or agent signer")
 }
@@ -417,6 +455,65 @@ func accountFromClearinghouseState(userAddress string, raw map[string]any, now t
 		OneDayPercentChange: "0",
 		RawUSD:              totalRawUSD,
 		Positions:           positions,
+	}
+}
+
+func tradeHistoryFromFill(item map[string]any) TradeHistory {
+	return TradeHistory{
+		Symbol:        stringFromAny(item["coin"]),
+		Time:          int64FromAny(item["time"]),
+		PnL:           stringFromAny(item["closedPnl"]),
+		PnLPercent:    "",
+		Dir:           stringFromAny(item["dir"]),
+		Hash:          stringFromAny(item["hash"]),
+		Oid:           int64FromAny(item["oid"]),
+		Px:            stringFromAny(item["px"]),
+		StartPosition: stringFromAny(item["startPosition"]),
+		Sz:            stringFromAny(item["sz"]),
+		Fee:           stringFromAny(item["fee"]),
+		FeeToken:      stringFromAny(item["feeToken"]),
+		Tid:           int64FromAny(item["tid"]),
+	}
+}
+
+func openOrderFromHTTP(userAddress string, provider string, item map[string]any, now time.Time) OpenOrder {
+	providerOrderID := stringFromAny(item["oid"])
+	timestamp := int64FromAny(item["timestamp"])
+	createdAt := now
+	if timestamp > 0 {
+		createdAt = time.UnixMilli(timestamp).UTC()
+	}
+	orderType := strings.ToLower(firstNonEmpty(stringFromAny(item["orderType"]), "limit"))
+	return OpenOrder{
+		ID:              firstNonEmpty(providerOrderID, stringFromAny(item["cloid"])),
+		UserAddress:     userAddress,
+		Symbol:          stringFromAny(item["coin"]),
+		Side:            hyperliquidSide(stringFromAny(item["side"])),
+		OrderType:       orderType,
+		Price:           stringFromAny(item["limitPx"]),
+		Size:            stringFromAny(item["sz"]),
+		OriginalSize:    stringFromAny(item["origSz"]),
+		Status:          "open",
+		Cloid:           stringFromAny(item["cloid"]),
+		Provider:        provider,
+		ProviderOrderID: providerOrderID,
+		ReduceOnly:      boolValue(item, false, "reduceOnly"),
+		TimeInForce:     stringFromAny(item["tif"]),
+		Timestamp:       timestamp,
+		RawPayload:      item,
+		CreatedAt:       createdAt,
+		UpdatedAt:       now,
+	}
+}
+
+func hyperliquidSide(side string) string {
+	switch strings.ToUpper(strings.TrimSpace(side)) {
+	case "B":
+		return "buy"
+	case "A":
+		return "sell"
+	default:
+		return strings.ToLower(strings.TrimSpace(side))
 	}
 }
 

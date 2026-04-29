@@ -14,6 +14,8 @@ type Provider interface {
 	Name() string
 	WalletStatus(ctx context.Context, userAddress string) (HyperliquidWalletStatus, error)
 	Account(ctx context.Context, userAddress string) (AccountBalance, error)
+	TradeHistory(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error)
+	OpenOrders(ctx context.Context, userAddress string) ([]OpenOrder, error)
 	Sign(ctx context.Context, action string, userID string, payload map[string]any) (ProviderActionResult, error)
 	SubmitOrder(ctx context.Context, order FuturesOrder) (ProviderActionResult, error)
 	CancelOrder(ctx context.Context, input CancelOrderInput) (ProviderActionResult, error)
@@ -61,6 +63,43 @@ func (p *LocalProvider) Account(_ context.Context, userAddress string) (AccountB
 		Positions: []Position{
 			seedPosition(userAddress, symbols[0], "long", now),
 			seedPosition(userAddress, symbols[1], "short", now),
+		},
+	}, nil
+}
+
+func (p *LocalProvider) TradeHistory(_ context.Context, _ string, limit int) ([]TradeHistory, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	now := p.now().UTC()
+	trades := []TradeHistory{
+		{Symbol: "BTC", Time: now.Add(-15 * time.Minute).UnixMilli(), PnL: "830", PnLPercent: "0.024", Dir: "Close Long", Hash: "0xfuture1", Oid: 1001, Px: "95200", StartPosition: "0.2", Sz: "0.2", Fee: "1.2", FeeToken: "USDC", Tid: 501},
+		{Symbol: "ETH", Time: now.Add(-45 * time.Minute).UnixMilli(), PnL: "-120", PnLPercent: "-0.006", Dir: "Close Short", Hash: "0xfuture2", Oid: 1002, Px: "3200.5", StartPosition: "4", Sz: "4", Fee: "0.8", FeeToken: "USDC", Tid: 502},
+	}
+	return trades[:minInt(limit, len(trades))], nil
+}
+
+func (p *LocalProvider) OpenOrders(_ context.Context, userAddress string) ([]OpenOrder, error) {
+	now := p.now().UTC()
+	return []OpenOrder{
+		{
+			ID:              "local-open-btc",
+			UserAddress:     strings.TrimSpace(userAddress),
+			Symbol:          "BTC",
+			Side:            "buy",
+			OrderType:       "limit",
+			Price:           "94000",
+			Size:            "0.05",
+			OriginalSize:    "0.05",
+			Status:          "open",
+			Provider:        p.Name(),
+			ProviderOrderID: "local-open-btc",
+			ReduceOnly:      false,
+			TimeInForce:     "Gtc",
+			Timestamp:       now.UnixMilli(),
+			RawPayload:      map[string]any{"provider": p.Name(), "mode": "local"},
+			CreatedAt:       now,
+			UpdatedAt:       now,
 		},
 	}, nil
 }

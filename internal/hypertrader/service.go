@@ -72,12 +72,12 @@ func (s *Service) Account(ctx context.Context, userAddress string) (AccountBalan
 	}, nil
 }
 
-func (s *Service) TradeHistory(_ context.Context) []TradeHistory {
-	now := s.now().UTC()
-	return []TradeHistory{
-		{Symbol: "BTC", Time: now.Add(-15 * time.Minute).Unix(), PnL: "830", PnLPercent: "0.024", Dir: "Close Long", Hash: "0xfuture1", Oid: 1001, Px: "95200", StartPosition: "0.2", Sz: "0.2", Fee: "1.2", FeeToken: "USDC", Tid: 501},
-		{Symbol: "ETH", Time: now.Add(-45 * time.Minute).Unix(), PnL: "-120", PnLPercent: "-0.006", Dir: "Close Short", Hash: "0xfuture2", Oid: 1002, Px: "3200.5", StartPosition: "4", Sz: "4", Fee: "0.8", FeeToken: "USDC", Tid: 502},
-	}
+func (s *Service) TradeHistory(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error) {
+	return s.provider.TradeHistory(ctx, userAddress, limit)
+}
+
+func (s *Service) OpenOrders(ctx context.Context, userAddress string) ([]OpenOrder, error) {
+	return s.provider.OpenOrders(ctx, userAddress)
 }
 
 func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (FuturesOrder, error) {

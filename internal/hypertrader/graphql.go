@@ -127,7 +127,11 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 		}
 		return map[string]any{"getUserPosition": map[string]any{"rawUSD": account.RawUSD, "positions": graphQLPositions(account.Positions)}}, nil
 	case "getusertradehistory":
-		return map[string]any{"getUserTradeHistory": map[string]any{"histories": graphQLTrades(h.service.TradeHistory(ctx))}}, nil
+		trades, err := h.service.TradeHistory(ctx, stringValue(input, "userAddress"), intValue(input, 100, "limit"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"getUserTradeHistory": map[string]any{"histories": graphQLTrades(trades)}}, nil
 	case "gethyperliquidorders", "getfutureorders":
 		orders, err := h.service.Orders(ctx, OrderFilter{
 			UserID:      stringValue(input, "userId"),
@@ -140,6 +144,12 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 			return nil, err
 		}
 		return map[string]any{graphQLOperationKey(operation): map[string]any{"total": len(orders), "orders": graphQLFuturesOrders(orders)}}, nil
+	case "gethyperliquidopenorders", "getopenorders":
+		orders, err := h.service.OpenOrders(ctx, stringValue(input, "userAddress"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{graphQLOperationKey(operation): map[string]any{"total": len(orders), "orders": graphQLOpenOrders(orders)}}, nil
 	case "createhyperliquidorder", "submithyperliquidorder":
 		order, err := h.service.CreateOrder(ctx, createOrderInputFromMap(input))
 		if err != nil {
@@ -334,7 +344,7 @@ func inferOperationName(operationName string, query string) string {
 	if strings.TrimSpace(operationName) != "" {
 		return strings.TrimSpace(operationName)
 	}
-	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "GetHyperLiquidOrderStatus", "SyncHyperLiquidOrderStatus", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
+	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "GetHyperLiquidOpenOrders", "GetOpenOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "GetHyperLiquidOrderStatus", "SyncHyperLiquidOrderStatus", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
 	for _, name := range known {
 		if strings.Contains(query, name) {
 			return name
@@ -449,6 +459,44 @@ func graphQLFuturesOrder(order FuturesOrder) map[string]any {
 		"updatedAt":       order.UpdatedAt,
 		"submittedAt":     order.SubmittedAt,
 		"cancelledAt":     order.CancelledAt,
+	}
+}
+
+func graphQLOpenOrders(orders []OpenOrder) []map[string]any {
+	out := make([]map[string]any, 0, len(orders))
+	for _, order := range orders {
+		out = append(out, graphQLOpenOrder(order))
+	}
+	return out
+}
+
+func graphQLOpenOrder(order OpenOrder) map[string]any {
+	return map[string]any{
+		"id":              order.ID,
+		"userAddress":     order.UserAddress,
+		"symbol":          order.Symbol,
+		"coin":            order.Symbol,
+		"side":            order.Side,
+		"orderType":       order.OrderType,
+		"type":            order.OrderType,
+		"price":           order.Price,
+		"px":              order.Price,
+		"size":            order.Size,
+		"sz":              order.Size,
+		"originalSize":    order.OriginalSize,
+		"origSz":          order.OriginalSize,
+		"status":          order.Status,
+		"cloid":           order.Cloid,
+		"provider":        order.Provider,
+		"providerOrderId": order.ProviderOrderID,
+		"oid":             order.ProviderOrderID,
+		"reduceOnly":      order.ReduceOnly,
+		"timeInForce":     order.TimeInForce,
+		"tif":             order.TimeInForce,
+		"timestamp":       order.Timestamp,
+		"rawPayload":      order.RawPayload,
+		"createdAt":       order.CreatedAt,
+		"updatedAt":       order.UpdatedAt,
 	}
 }
 

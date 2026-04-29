@@ -85,6 +85,27 @@ type TradeHistory struct {
 	Tid           int64  `json:"tid"`
 }
 
+type OpenOrder struct {
+	ID              string         `json:"id"`
+	UserAddress     string         `json:"userAddress,omitempty"`
+	Symbol          string         `json:"symbol"`
+	Side            string         `json:"side"`
+	OrderType       string         `json:"orderType"`
+	Price           string         `json:"price,omitempty"`
+	Size            string         `json:"size"`
+	OriginalSize    string         `json:"originalSize,omitempty"`
+	Status          string         `json:"status"`
+	Cloid           string         `json:"cloid,omitempty"`
+	Provider        string         `json:"provider"`
+	ProviderOrderID string         `json:"providerOrderId,omitempty"`
+	ReduceOnly      bool           `json:"reduceOnly"`
+	TimeInForce     string         `json:"timeInForce,omitempty"`
+	Timestamp       int64          `json:"timestamp,omitempty"`
+	RawPayload      map[string]any `json:"rawPayload,omitempty"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
+}
+
 type FuturesOrder struct {
 	ID              string         `json:"id"`
 	UserID          string         `json:"userId,omitempty"`

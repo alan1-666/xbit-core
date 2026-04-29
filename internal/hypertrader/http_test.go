@@ -29,6 +29,12 @@ func TestHypertraderHTTPFlow(t *testing.T) {
 		t.Fatalf("account status = %d body = %s", accountRec.Code, accountRec.Body.String())
 	}
 
+	openOrdersRec := httptest.NewRecorder()
+	router.ServeHTTP(openOrdersRec, httptest.NewRequest(http.MethodGet, "/v1/futures/open-orders?userAddress=0xuser", nil))
+	if openOrdersRec.Code != http.StatusOK || !strings.Contains(openOrdersRec.Body.String(), `"providerOrderId"`) {
+		t.Fatalf("open orders status = %d body = %s", openOrdersRec.Code, openOrdersRec.Body.String())
+	}
+
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/v1/futures/orders", strings.NewReader(`{"userId":"user-1","userAddress":"0xuser","symbol":"BTC","side":"buy","orderType":"market","size":"0.1","clientRequestId":"http-req-1"}`)))
 	if createRec.Code != http.StatusOK {
@@ -135,6 +141,16 @@ func TestHypertraderGraphQLFacades(t *testing.T) {
 	order := orderBody["data"].(map[string]any)["createHyperLiquidOrder"].(map[string]any)
 	if order["status"] != "submitted" || order["providerOrderId"] == "" {
 		t.Fatalf("unexpected gql order: %+v", order)
+	}
+
+	openOrdersBody := postHyperGraphQL(t, router, "/api/dex-hypertrader/graphql", `{
+		"operationName":"GetHyperLiquidOpenOrders",
+		"query":"query GetHyperLiquidOpenOrders { getHyperLiquidOpenOrders { total orders { id symbol status providerOrderId } } }",
+		"variables":{"input":{"userAddress":"0xuser"}}
+	}`)
+	openOrders := openOrdersBody["data"].(map[string]any)["getHyperLiquidOpenOrders"].(map[string]any)["orders"].([]any)
+	if len(openOrders) == 0 {
+		t.Fatalf("open orders empty: %+v", openOrdersBody)
 	}
 
 	syncedOrderBody := postHyperGraphQL(t, router, "/api/dex-hypertrader/graphql", `{
