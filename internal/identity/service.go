@@ -168,7 +168,7 @@ func (s *Service) VerifyAccessToken(token string) (*auth.AccessClaims, error) {
 
 func BuildWalletLoginMessage(walletAddress string, chainType string, nonce string, expiresAt time.Time) string {
 	return fmt.Sprintf(
-		"XBIT wants you to sign in with your %s wallet:\n%s\n\nNonce: %s\nExpires At: %s",
+		"KairoX wants you to sign in with your %s wallet:\n%s\n\nNonce: %s\nExpires At: %s",
 		chainType,
 		walletAddress,
 		nonce,

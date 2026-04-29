@@ -1,6 +1,6 @@
-# XBIT Backend
+# KairoX Backend
 
-Go backend scaffold for XBIT Web V2.
+Go backend scaffold for the KairoX web application.
 
 This is a standalone backend service directory. The frontend app remains in:
 

@@ -41,7 +41,7 @@ func NewAgentSigner(store AgentStore, cfg AgentSignerConfig) *AgentSigner {
 		cfg.SignatureChainID = "0xa4b1"
 	}
 	if cfg.AgentNamePrefix == "" {
-		cfg.AgentNamePrefix = "XBIT Agent"
+		cfg.AgentNamePrefix = "KairoX Agent"
 	}
 	if cfg.DefaultPolicy.MaxLeverage <= 0 {
 		cfg.DefaultPolicy.MaxLeverage = 20

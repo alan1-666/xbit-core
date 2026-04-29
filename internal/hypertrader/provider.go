@@ -42,10 +42,10 @@ func (p *LocalProvider) WalletStatus(_ context.Context, _ string) (HyperliquidWa
 		SetReferral:       true,
 		SetFeeBuilder:     true,
 		Agent:             "0xagent",
-		AgentName:         "XBIT Local Agent",
+		AgentName:         "KairoX Local Agent",
 		FeeBuilderAddress: "0xfeebuilder",
 		FeeBuilderPercent: "0.03",
-		ReferralCode:      "XBIT",
+		ReferralCode:      "KAIROX",
 	}, nil
 }
 
