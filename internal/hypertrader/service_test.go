@@ -2,6 +2,7 @@ package hypertrader
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -115,4 +116,29 @@ func TestServiceOrderLifecycle(t *testing.T) {
 	if len(events) < 5 {
 		t.Fatalf("expected audit events, got %+v", events)
 	}
+}
+
+func TestServiceOpenOrdersUsesEmptySnapshotFallback(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.SaveOpenOrdersSnapshot(ctx, "0xempty", nil); err != nil {
+		t.Fatal(err)
+	}
+	service := NewServiceWithProvider(store, failingOpenOrdersProvider{LocalProvider: NewLocalProvider()})
+
+	orders, err := service.OpenOrders(ctx, "0xempty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 0 {
+		t.Fatalf("expected empty snapshot fallback, got %+v", orders)
+	}
+}
+
+type failingOpenOrdersProvider struct {
+	*LocalProvider
+}
+
+func (p failingOpenOrdersProvider) OpenOrders(context.Context, string) ([]OpenOrder, error) {
+	return nil, errors.New("provider unavailable")
 }

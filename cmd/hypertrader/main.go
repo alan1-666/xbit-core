@@ -61,11 +61,14 @@ func main() {
 		var streamCtx context.Context
 		streamCtx, streamCancel = context.WithCancel(context.Background())
 		defer streamCancel()
+		stateStore, _ := store.(hypertrader.StateStore)
 		bridge := hypertrader.NewHyperliquidStreamBridge(hypertrader.StreamBridgeConfig{
-			WSURL:  cfg.HyperliquidWSURL,
-			Users:  cfg.HyperliquidWSUsers,
-			Dex:    cfg.HyperliquidWSDex,
-			Logger: logger,
+			WSURL:      cfg.HyperliquidWSURL,
+			Users:      cfg.HyperliquidWSUsers,
+			Dex:        cfg.HyperliquidWSDex,
+			StateStore: stateStore,
+			Provider:   provider,
+			Logger:     logger,
 		}, streamSvc)
 		go bridge.Run(streamCtx)
 	}

@@ -21,3 +21,4 @@ Current initial migration sets:
 - `market-data/000001_market_data_base.sql`
 - `hypertrader/000001_hypertrader_base.sql`
 - `hypertrader/000002_hypertrader_orders_audit.sql`
+- `hypertrader/000003_hypertrader_live_state.sql`

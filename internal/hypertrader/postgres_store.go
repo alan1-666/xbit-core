@@ -421,6 +421,218 @@ func (s *PostgresStore) DeleteAddress(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *PostgresStore) SaveOpenOrdersSnapshot(ctx context.Context, userAddress string, orders []OpenOrder) error {
+	userAddress = strings.TrimSpace(userAddress)
+	if userAddress == "" {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin open order snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM hyper_open_order_snapshots WHERE lower(user_address) = lower($1)`, userAddress); err != nil {
+		return fmt.Errorf("clear open order snapshot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO hyper_open_order_snapshot_meta (user_address, updated_at)
+		VALUES ($1, now())
+		ON CONFLICT (user_address)
+		DO UPDATE SET updated_at = EXCLUDED.updated_at
+	`, userAddress); err != nil {
+		return fmt.Errorf("save open order snapshot meta: %w", err)
+	}
+	for _, order := range orders {
+		order.UserAddress = firstNonEmpty(order.UserAddress, userAddress)
+		id := firstNonEmpty(order.ProviderOrderID, order.Cloid, order.ID)
+		if id == "" {
+			continue
+		}
+		order.ID = firstNonEmpty(order.ID, id)
+		order.ProviderOrderID = firstNonEmpty(order.ProviderOrderID, id)
+		payload, err := json.Marshal(order)
+		if err != nil {
+			return fmt.Errorf("marshal open order snapshot: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO hyper_open_order_snapshots (user_address, provider_order_id, order_payload, status, updated_at)
+			VALUES ($1, $2, $3, $4, now())
+			ON CONFLICT (user_address, provider_order_id)
+			DO UPDATE SET order_payload = EXCLUDED.order_payload, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at
+		`, userAddress, id, payload, firstNonEmpty(order.Status, "open")); err != nil {
+			return fmt.Errorf("save open order snapshot: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit open order snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListOpenOrdersSnapshot(ctx context.Context, userAddress string) ([]OpenOrder, error) {
+	userAddress = strings.TrimSpace(userAddress)
+	if userAddress == "" {
+		return nil, ErrNotFound
+	}
+	var hasSnapshot bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM hyper_open_order_snapshot_meta
+			WHERE lower(user_address) = lower($1)
+		)
+	`, userAddress).Scan(&hasSnapshot); err != nil {
+		return nil, fmt.Errorf("check open order snapshot: %w", err)
+	}
+	if !hasSnapshot {
+		return nil, ErrNotFound
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT order_payload
+		FROM hyper_open_order_snapshots
+		WHERE lower(user_address) = lower($1)
+		ORDER BY updated_at DESC
+	`, userAddress)
+	if err != nil {
+		return nil, fmt.Errorf("list open order snapshot: %w", err)
+	}
+	defer rows.Close()
+	out := make([]OpenOrder, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan open order snapshot: %w", err)
+		}
+		var order OpenOrder
+		if err := json.Unmarshal(payload, &order); err == nil {
+			out = append(out, order)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) AppendFills(ctx context.Context, userAddress string, fills []TradeHistory) error {
+	userAddress = strings.TrimSpace(userAddress)
+	if userAddress == "" {
+		return nil
+	}
+	for _, fill := range fills {
+		fillID := ownerKey("", userAddress) + ":" + fillKey(fill)
+		payload, err := json.Marshal(fill)
+		if err != nil {
+			return fmt.Errorf("marshal fill snapshot: %w", err)
+		}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO hyper_fills (id, user_address, symbol, provider_order_id, fill_time, fill_payload, created_at, updated_at)
+			VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, now(), now())
+			ON CONFLICT (id)
+			DO UPDATE SET fill_payload = EXCLUDED.fill_payload, updated_at = EXCLUDED.updated_at
+		`, fillID, userAddress, fill.Symbol, fmt.Sprintf("%d", fill.Oid), fill.Time, payload); err != nil {
+			return fmt.Errorf("append hyper fill: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListFills(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT fill_payload
+		FROM hyper_fills
+		WHERE lower(user_address) = lower($1)
+		ORDER BY fill_time DESC, updated_at DESC
+		LIMIT $2
+	`, strings.TrimSpace(userAddress), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list hyper fills: %w", err)
+	}
+	defer rows.Close()
+	out := make([]TradeHistory, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan hyper fill: %w", err)
+		}
+		var fill TradeHistory
+		if err := json.Unmarshal(payload, &fill); err == nil {
+			out = append(out, fill)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SaveAccountSnapshot(ctx context.Context, userAddress string, account AccountBalance) error {
+	userAddress = strings.TrimSpace(userAddress)
+	if userAddress == "" {
+		return nil
+	}
+	payload, err := json.Marshal(account)
+	if err != nil {
+		return fmt.Errorf("marshal account snapshot: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO hyper_account_snapshots (user_address, account_payload, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (user_address)
+		DO UPDATE SET account_payload = EXCLUDED.account_payload, updated_at = EXCLUDED.updated_at
+	`, userAddress, payload)
+	if err != nil {
+		return fmt.Errorf("save account snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetAccountSnapshot(ctx context.Context, userAddress string) (AccountBalance, error) {
+	var payload []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT account_payload
+		FROM hyper_account_snapshots
+		WHERE lower(user_address) = lower($1)
+	`, strings.TrimSpace(userAddress)).Scan(&payload)
+	if stderrors.Is(err, pgx.ErrNoRows) {
+		return AccountBalance{}, ErrNotFound
+	}
+	if err != nil {
+		return AccountBalance{}, fmt.Errorf("get account snapshot: %w", err)
+	}
+	var account AccountBalance
+	if err := json.Unmarshal(payload, &account); err != nil {
+		return AccountBalance{}, fmt.Errorf("decode account snapshot: %w", err)
+	}
+	return account, nil
+}
+
+func (s *PostgresStore) UpdateOrderStatusByProvider(ctx context.Context, input OrderStatusInput, status OrderStatus) error {
+	providerOrderID := firstNonEmpty(status.ProviderOrderID, input.ProviderOrderID)
+	cloid := firstNonEmpty(status.Cloid, input.Cloid)
+	if providerOrderID == "" && cloid == "" {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{"wsOrderStatus": orderStatusPayload(status)})
+	if err != nil {
+		return fmt.Errorf("marshal ws order status: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE hyper_orders
+		SET status = CASE
+		        WHEN status IN ('cancelled', 'filled', 'failed', 'rejected') AND $5 = 'submitted' THEN status
+		        ELSE COALESCE(NULLIF($5, ''), status)
+		    END,
+		    provider_order_id = COALESCE(NULLIF($3, ''), provider_order_id),
+		    response_payload = response_payload || $6::jsonb,
+		    cancelled_at = CASE WHEN $5 = 'cancelled' THEN COALESCE(cancelled_at, now()) ELSE cancelled_at END,
+		    updated_at = now()
+		WHERE ($1 = '' OR lower(COALESCE(user_address, '')) = lower($1) OR user_id = $2)
+		  AND (($3 <> '' AND provider_order_id = $3) OR ($4 <> '' AND cloid = $4))
+	`, strings.TrimSpace(input.UserAddress), strings.TrimSpace(input.UserID), providerOrderID, cloid, normalizeProviderOrderStatus(status.Status), payload)
+	if err != nil {
+		return fmt.Errorf("update order status by provider: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) getAddress(ctx context.Context, id string) (Address, error) {
 	address, err := scanAddress(s.pool.QueryRow(ctx, `
 		SELECT id, address, remark_name, group_ids, COALESCE(owner_user_id, ''), user_address, profit_1d::text, profit_7d::text, profit_30d::text, created_at, updated_at
@@ -531,3 +743,4 @@ func decimal(value string) string {
 }
 
 var _ Store = (*PostgresStore)(nil)
+var _ StateStore = (*PostgresStore)(nil)

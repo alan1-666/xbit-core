@@ -36,24 +36,40 @@ type Store interface {
 	DeleteAddress(ctx context.Context, id string) error
 }
 
+type StateStore interface {
+	SaveOpenOrdersSnapshot(ctx context.Context, userAddress string, orders []OpenOrder) error
+	ListOpenOrdersSnapshot(ctx context.Context, userAddress string) ([]OpenOrder, error)
+	AppendFills(ctx context.Context, userAddress string, fills []TradeHistory) error
+	ListFills(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error)
+	SaveAccountSnapshot(ctx context.Context, userAddress string, account AccountBalance) error
+	GetAccountSnapshot(ctx context.Context, userAddress string) (AccountBalance, error)
+	UpdateOrderStatusByProvider(ctx context.Context, input OrderStatusInput, status OrderStatus) error
+}
+
 type MemoryStore struct {
-	mu          sync.RWMutex
-	symbols     map[string]Symbol
-	preferences map[string]SymbolPreference
-	orders      map[string]FuturesOrder
-	audits      []AuditEvent
-	traders     []SmartMoneyTrader
-	groups      map[string]AddressGroup
-	addresses   map[string]Address
+	mu               sync.RWMutex
+	symbols          map[string]Symbol
+	preferences      map[string]SymbolPreference
+	orders           map[string]FuturesOrder
+	audits           []AuditEvent
+	traders          []SmartMoneyTrader
+	groups           map[string]AddressGroup
+	addresses        map[string]Address
+	openOrders       map[string]map[string]OpenOrder
+	fills            map[string]map[string]TradeHistory
+	accountSnapshots map[string]AccountBalance
 }
 
 func NewMemoryStore() *MemoryStore {
 	store := &MemoryStore{
-		symbols:     map[string]Symbol{},
-		preferences: map[string]SymbolPreference{},
-		orders:      map[string]FuturesOrder{},
-		groups:      map[string]AddressGroup{},
-		addresses:   map[string]Address{},
+		symbols:          map[string]Symbol{},
+		preferences:      map[string]SymbolPreference{},
+		orders:           map[string]FuturesOrder{},
+		groups:           map[string]AddressGroup{},
+		addresses:        map[string]Address{},
+		openOrders:       map[string]map[string]OpenOrder{},
+		fills:            map[string]map[string]TradeHistory{},
+		accountSnapshots: map[string]AccountBalance{},
 	}
 	store.seed()
 	return store
@@ -391,6 +407,123 @@ func (s *MemoryStore) DeleteAddress(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *MemoryStore) SaveOpenOrdersSnapshot(_ context.Context, userAddress string, orders []OpenOrder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := ownerKey("", userAddress)
+	s.openOrders[key] = map[string]OpenOrder{}
+	for _, order := range orders {
+		order.UserAddress = firstNonEmpty(order.UserAddress, userAddress)
+		id := firstNonEmpty(order.ProviderOrderID, order.Cloid, order.ID)
+		if id == "" {
+			id = uuid.NewString()
+		}
+		order.ID = firstNonEmpty(order.ID, id)
+		order.ProviderOrderID = firstNonEmpty(order.ProviderOrderID, id)
+		if order.UpdatedAt.IsZero() {
+			order.UpdatedAt = time.Now().UTC()
+		}
+		s.openOrders[key][id] = order
+	}
+	return nil
+}
+
+func (s *MemoryStore) ListOpenOrdersSnapshot(_ context.Context, userAddress string) ([]OpenOrder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	orders, ok := s.openOrders[ownerKey("", userAddress)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]OpenOrder, 0, len(orders))
+	for _, order := range orders {
+		out = append(out, order)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out, nil
+}
+
+func (s *MemoryStore) AppendFills(_ context.Context, userAddress string, fills []TradeHistory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := ownerKey("", userAddress)
+	if s.fills[key] == nil {
+		s.fills[key] = map[string]TradeHistory{}
+	}
+	for _, fill := range fills {
+		s.fills[key][fillKey(fill)] = fill
+	}
+	return nil
+}
+
+func (s *MemoryStore) ListFills(_ context.Context, userAddress string, limit int) ([]TradeHistory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > 2000 {
+		limit = 100
+	}
+	fills := s.fills[ownerKey("", userAddress)]
+	out := make([]TradeHistory, 0, len(fills))
+	for _, fill := range fills {
+		out = append(out, fill)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Time > out[j].Time })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SaveAccountSnapshot(_ context.Context, userAddress string, account AccountBalance) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accountSnapshots[ownerKey("", userAddress)] = account
+	return nil
+}
+
+func (s *MemoryStore) GetAccountSnapshot(_ context.Context, userAddress string) (AccountBalance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	account, ok := s.accountSnapshots[ownerKey("", userAddress)]
+	if !ok {
+		return AccountBalance{}, ErrNotFound
+	}
+	return account, nil
+}
+
+func (s *MemoryStore) UpdateOrderStatusByProvider(_ context.Context, input OrderStatusInput, status OrderStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nextStatus := normalizeProviderOrderStatus(status.Status)
+	for id, order := range s.orders {
+		if input.UserAddress != "" && order.UserAddress != "" && !strings.EqualFold(order.UserAddress, input.UserAddress) {
+			continue
+		}
+		if input.UserID != "" && order.UserID != "" && order.UserID != input.UserID {
+			continue
+		}
+		matches := false
+		if status.ProviderOrderID != "" && order.ProviderOrderID == status.ProviderOrderID {
+			matches = true
+		}
+		if status.Cloid != "" && order.Cloid == status.Cloid {
+			matches = true
+		}
+		if !matches {
+			continue
+		}
+		order.Status = mergeSyncedOrderStatus(order.Status, nextStatus)
+		if order.Status == "cancelled" && order.CancelledAt == nil {
+			cancelledAt := time.Now().UTC()
+			order.CancelledAt = &cancelledAt
+		}
+		order.ResponsePayload = mergePayload(order.ResponsePayload, map[string]any{"wsOrderStatus": orderStatusPayload(status)})
+		order.UpdatedAt = time.Now().UTC()
+		s.orders[id] = order
+	}
+	return nil
+}
+
 func prefKey(userID string, symbol string) string {
 	return strings.TrimSpace(userID) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
 }
@@ -431,3 +564,16 @@ func mergePayload(base map[string]any, patch map[string]any) map[string]any {
 	}
 	return base
 }
+
+func ownerKey(userID string, userAddress string) string {
+	return strings.ToLower(firstNonEmpty(userID, userAddress))
+}
+
+func fillKey(fill TradeHistory) string {
+	if fill.Hash != "" && fill.Tid != 0 {
+		return fill.Hash + ":" + strconv.FormatInt(fill.Tid, 10)
+	}
+	return strings.Join([]string{fill.Symbol, strconv.FormatInt(fill.Time, 10), strconv.FormatInt(fill.Oid, 10), strconv.FormatInt(fill.Tid, 10)}, ":")
+}
+
+var _ StateStore = (*MemoryStore)(nil)

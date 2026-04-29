@@ -48,7 +48,15 @@ func (s *Service) Account(ctx context.Context, userAddress string) (AccountBalan
 	if strings.TrimSpace(userAddress) != "" {
 		account, err := s.provider.Account(ctx, userAddress)
 		if err == nil && (account.Balance != "" || len(account.Positions) > 0) {
+			if state, ok := s.store.(StateStore); ok {
+				_ = state.SaveAccountSnapshot(ctx, userAddress, account)
+			}
 			return account, nil
+		}
+		if state, ok := s.store.(StateStore); ok {
+			if snapshot, snapshotErr := state.GetAccountSnapshot(ctx, userAddress); snapshotErr == nil {
+				return snapshot, nil
+			}
 		}
 	}
 	symbols, err := s.store.ListSymbols(ctx, "", "", 2)
@@ -73,11 +81,35 @@ func (s *Service) Account(ctx context.Context, userAddress string) (AccountBalan
 }
 
 func (s *Service) TradeHistory(ctx context.Context, userAddress string, limit int) ([]TradeHistory, error) {
-	return s.provider.TradeHistory(ctx, userAddress, limit)
+	trades, err := s.provider.TradeHistory(ctx, userAddress, limit)
+	if err == nil {
+		if state, ok := s.store.(StateStore); ok {
+			_ = state.AppendFills(ctx, userAddress, trades)
+		}
+		return trades, nil
+	}
+	if state, ok := s.store.(StateStore); ok {
+		if snapshot, snapshotErr := state.ListFills(ctx, userAddress, limit); snapshotErr == nil && len(snapshot) > 0 {
+			return snapshot, nil
+		}
+	}
+	return nil, err
 }
 
 func (s *Service) OpenOrders(ctx context.Context, userAddress string) ([]OpenOrder, error) {
-	return s.provider.OpenOrders(ctx, userAddress)
+	orders, err := s.provider.OpenOrders(ctx, userAddress)
+	if err == nil {
+		if state, ok := s.store.(StateStore); ok {
+			_ = state.SaveOpenOrdersSnapshot(ctx, userAddress, orders)
+		}
+		return orders, nil
+	}
+	if state, ok := s.store.(StateStore); ok {
+		if snapshot, snapshotErr := state.ListOpenOrdersSnapshot(ctx, userAddress); snapshotErr == nil {
+			return snapshot, nil
+		}
+	}
+	return nil, err
 }
 
 func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (FuturesOrder, error) {

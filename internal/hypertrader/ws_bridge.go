@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,9 @@ type StreamBridgeConfig struct {
 	Dex            string
 	Subscriptions  []string
 	ReconnectDelay time.Duration
+	StateStore     StateStore
+	Provider       Provider
+	ReconcileLimit int
 	Logger         *slog.Logger
 }
 
@@ -48,6 +52,9 @@ func NewHyperliquidStreamBridge(cfg StreamBridgeConfig, stream *streambridge.Ser
 	}
 	if len(cfg.Subscriptions) == 0 {
 		cfg.Subscriptions = []string{"orderUpdates", "userEvents", "userFills", "userFundings", "userNonFundingLedgerUpdates", "openOrders", "clearinghouseState"}
+	}
+	if cfg.ReconcileLimit <= 0 || cfg.ReconcileLimit > 2000 {
+		cfg.ReconcileLimit = 100
 	}
 	cfg.Users = normalizeUsers(cfg.Users)
 	return &HyperliquidStreamBridge{
@@ -115,6 +122,7 @@ func (b *HyperliquidStreamBridge) runUserOnce(ctx context.Context, user string) 
 		}
 	}
 	b.logInfo("hyperliquid ws subscribed", "user", user, "subscriptions", strings.Join(b.cfg.Subscriptions, ","))
+	b.reconcileUser(ctx, user)
 
 	for {
 		var message map[string]any
@@ -178,6 +186,19 @@ func (b *HyperliquidStreamBridge) publishOrderUpdates(ctx context.Context, user 
 		order := asMap(raw["order"])
 		status := stringFromAny(raw["status"])
 		aggregateID := firstNonEmpty(stringFromAny(order["oid"]), stringFromAny(raw["oid"]))
+		orderStatus := OrderStatus{
+			ProviderOrderID: aggregateID,
+			Cloid:           stringFromAny(order["cloid"]),
+			Symbol:          stringFromAny(order["coin"]),
+			Status:          status,
+			RemainingSize:   stringFromAny(order["sz"]),
+			AveragePrice:    firstNonEmpty(stringFromAny(raw["avgPx"]), stringFromAny(order["avgPx"]), stringFromAny(order["limitPx"])),
+			RawPayload:      raw,
+			UpdatedAt:       eventTime(raw, b.now().UTC()),
+		}
+		if b.cfg.StateStore != nil {
+			_ = b.cfg.StateStore.UpdateOrderStatusByProvider(ctx, OrderStatusInput{UserAddress: user, ProviderOrderID: aggregateID, Cloid: orderStatus.Cloid, Symbol: orderStatus.Symbol}, orderStatus)
+		}
 		payload := map[string]any{
 			"provider":        hyperliquidWSProvider,
 			"userAddress":     user,
@@ -210,8 +231,10 @@ func (b *HyperliquidStreamBridge) publishUserFills(ctx context.Context, defaultU
 	raw := asMap(data)
 	user := firstNonEmpty(stringFromAny(raw["user"]), defaultUser)
 	isSnapshot := boolValue(raw, false, "isSnapshot")
+	fills := make([]TradeHistory, 0)
 	for _, item := range anySlice(raw["fills"]) {
 		fill := asMap(item)
+		fills = append(fills, tradeHistoryFromFill(fill))
 		payload := fillPayload(fill, user, isSnapshot)
 		if err := b.publish(ctx, streambridge.Event{
 			Type:        streambridge.EventHypertraderFillCreated,
@@ -224,14 +247,19 @@ func (b *HyperliquidStreamBridge) publishUserFills(ctx context.Context, defaultU
 			return err
 		}
 	}
+	if b.cfg.StateStore != nil {
+		_ = b.cfg.StateStore.AppendFills(ctx, user, fills)
+	}
 	return nil
 }
 
 func (b *HyperliquidStreamBridge) publishUserEvents(ctx context.Context, defaultUser string, data any) error {
 	raw := asMap(data)
 	if fills := anySlice(raw["fills"]); len(fills) > 0 {
+		trades := make([]TradeHistory, 0, len(fills))
 		for _, item := range fills {
 			fill := asMap(item)
+			trades = append(trades, tradeHistoryFromFill(fill))
 			if err := b.publish(ctx, streambridge.Event{
 				Type:        streambridge.EventHypertraderFillCreated,
 				Source:      hyperliquidWSProvider,
@@ -242,6 +270,9 @@ func (b *HyperliquidStreamBridge) publishUserEvents(ctx context.Context, default
 			}); err != nil {
 				return err
 			}
+		}
+		if b.cfg.StateStore != nil {
+			_ = b.cfg.StateStore.AppendFills(ctx, defaultUser, trades)
 		}
 	}
 	if funding := asMap(raw["funding"]); len(funding) > 0 {
@@ -299,9 +330,14 @@ func (b *HyperliquidStreamBridge) publishOpenOrders(ctx context.Context, default
 	user := firstNonEmpty(stringFromAny(raw["user"]), defaultUser)
 	now := b.now().UTC()
 	orders := make([]map[string]any, 0)
+	stateOrders := make([]OpenOrder, 0)
 	for _, item := range anySlice(raw["orders"]) {
 		order := openOrderFromHTTP(user, hyperliquidWSProvider, asMap(item), now)
+		stateOrders = append(stateOrders, order)
 		orders = append(orders, graphQLOpenOrder(order))
+	}
+	if b.cfg.StateStore != nil {
+		_ = b.cfg.StateStore.SaveOpenOrdersSnapshot(ctx, user, stateOrders)
 	}
 	return b.publish(ctx, streambridge.Event{
 		Type:        streambridge.EventHypertraderOpenOrders,
@@ -381,6 +417,9 @@ func (b *HyperliquidStreamBridge) publishClearinghouseState(ctx context.Context,
 	raw := asMap(data)
 	user := firstNonEmpty(stringFromAny(raw["user"]), defaultUser)
 	account := accountFromClearinghouseState(user, raw, b.now().UTC())
+	if b.cfg.StateStore != nil {
+		_ = b.cfg.StateStore.SaveAccountSnapshot(ctx, user, account)
+	}
 	if err := b.publish(ctx, streambridge.Event{
 		Type:        streambridge.EventHypertraderAccountUpdated,
 		Source:      hyperliquidWSProvider,
@@ -417,6 +456,65 @@ func (b *HyperliquidStreamBridge) publishClearinghouseState(ctx context.Context,
 	return nil
 }
 
+func (b *HyperliquidStreamBridge) reconcileUser(ctx context.Context, user string) {
+	if b.cfg.Provider == nil {
+		return
+	}
+	if orders, err := b.cfg.Provider.OpenOrders(ctx, user); err == nil {
+		if b.cfg.StateStore != nil {
+			_ = b.cfg.StateStore.SaveOpenOrdersSnapshot(ctx, user, orders)
+		}
+		_ = b.publish(ctx, streambridge.Event{
+			Type:        streambridge.EventHypertraderOpenOrders,
+			Source:      hyperliquidWSProvider,
+			UserID:      user,
+			AggregateID: "reconcile",
+			Payload: map[string]any{
+				"provider":    hyperliquidWSProvider,
+				"userAddress": user,
+				"isSnapshot":  true,
+				"orders":      graphQLOpenOrders(orders),
+			},
+			CreatedAt: b.now().UTC(),
+		})
+	}
+	if account, err := b.cfg.Provider.Account(ctx, user); err == nil {
+		if b.cfg.StateStore != nil {
+			_ = b.cfg.StateStore.SaveAccountSnapshot(ctx, user, account)
+		}
+		_ = b.publish(ctx, streambridge.Event{
+			Type:        streambridge.EventHypertraderAccountUpdated,
+			Source:      hyperliquidWSProvider,
+			UserID:      user,
+			AggregateID: "reconcile",
+			Payload: map[string]any{
+				"provider":    hyperliquidWSProvider,
+				"userAddress": user,
+				"isSnapshot":  true,
+				"balance":     account.Balance,
+				"rawUSD":      account.RawUSD,
+				"positions":   graphQLPositions(account.Positions),
+			},
+			CreatedAt: b.now().UTC(),
+		})
+	}
+	if fills, err := b.cfg.Provider.TradeHistory(ctx, user, b.cfg.ReconcileLimit); err == nil {
+		if b.cfg.StateStore != nil {
+			_ = b.cfg.StateStore.AppendFills(ctx, user, fills)
+		}
+		for _, fill := range fills {
+			_ = b.publish(ctx, streambridge.Event{
+				Type:        streambridge.EventHypertraderFillCreated,
+				Source:      hyperliquidWSProvider,
+				UserID:      user,
+				AggregateID: tradeHistoryAggregateID(fill),
+				Payload:     tradeHistoryPayload(fill, user, true),
+				CreatedAt:   timeFromMillis(fill.Time, b.now().UTC()),
+			})
+		}
+	}
+}
+
 func (b *HyperliquidStreamBridge) publish(ctx context.Context, event streambridge.Event) error {
 	if event.Payload == nil {
 		event.Payload = map[string]any{}
@@ -427,22 +525,28 @@ func (b *HyperliquidStreamBridge) publish(ctx context.Context, event streambridg
 
 func fillPayload(fill map[string]any, user string, isSnapshot bool) map[string]any {
 	trade := tradeHistoryFromFill(fill)
+	payload := tradeHistoryPayload(trade, user, isSnapshot)
+	payload["side"] = hyperliquidSide(stringFromAny(fill["side"]))
+	payload["rawPayload"] = fill
+	return payload
+}
+
+func tradeHistoryPayload(trade TradeHistory, user string, isSnapshot bool) map[string]any {
 	return map[string]any{
 		"provider":        hyperliquidWSProvider,
 		"userAddress":     user,
 		"symbol":          trade.Symbol,
-		"side":            hyperliquidSide(stringFromAny(fill["side"])),
+		"side":            trade.Dir,
 		"price":           trade.Px,
 		"size":            trade.Sz,
 		"closedPnl":       trade.PnL,
 		"dir":             trade.Dir,
 		"hash":            trade.Hash,
-		"providerOrderId": stringFromAny(fill["oid"]),
+		"providerOrderId": int64String(trade.Oid),
 		"tid":             trade.Tid,
 		"fee":             trade.Fee,
 		"feeToken":        trade.FeeToken,
 		"isSnapshot":      isSnapshot,
-		"rawPayload":      fill,
 	}
 }
 
@@ -453,6 +557,20 @@ func fillAggregateID(fill map[string]any) string {
 		return hash + ":" + tid
 	}
 	return firstNonEmpty(hash, tid, stringFromAny(fill["oid"]))
+}
+
+func tradeHistoryAggregateID(fill TradeHistory) string {
+	if fill.Hash != "" && fill.Tid != 0 {
+		return fill.Hash + ":" + strconv.FormatInt(fill.Tid, 10)
+	}
+	return firstNonEmpty(fill.Hash, int64String(fill.Tid), int64String(fill.Oid))
+}
+
+func int64String(value int64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
 }
 
 func eventTime(raw map[string]any, fallback time.Time) time.Time {
@@ -466,6 +584,13 @@ func eventTime(raw map[string]any, fallback time.Time) time.Time {
 		return time.UnixMilli(ts).UTC()
 	}
 	return fallback
+}
+
+func timeFromMillis(value int64, fallback time.Time) time.Time {
+	if value <= 0 {
+		return fallback
+	}
+	return time.UnixMilli(value).UTC()
 }
 
 func anySlice(value any) []any {

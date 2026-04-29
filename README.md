@@ -266,7 +266,7 @@ MQTT_BROKER_URL=tcp://localhost:1883 \
 SERVICE_ADDR=:8086 go run ./cmd/hypertrader
 ```
 
-The WS bridge subscribes to Hyperliquid `orderUpdates`, `userEvents`, `userFills`, `userFundings`, `userNonFundingLedgerUpdates`, `openOrders` and `clearinghouseState`, then publishes normalized MQTT envelopes through the same stream-bridge publisher. If `MQTT_ENABLED=false`, the bridge uses the in-memory publisher and exposes recent events under `/v1/stream/*` on the hypertrader service for local dry-runs.
+The WS bridge subscribes to Hyperliquid `orderUpdates`, `userEvents`, `userFills`, `userFundings`, `userNonFundingLedgerUpdates`, `openOrders` and `clearinghouseState`, then publishes normalized MQTT envelopes through the same stream-bridge publisher. On every reconnect it reconciles open orders, account state and recent fills through the configured provider, persists those snapshots to the hypertrader read model, and uses them as REST/GraphQL fallback data if the live provider is temporarily unavailable. If `MQTT_ENABLED=false`, the bridge uses the in-memory publisher and exposes recent events under `/v1/stream/*` on the hypertrader service for local dry-runs.
 
 Implemented endpoints:
 
@@ -372,3 +372,4 @@ Initial migration sets:
 - `migrations/market-data/000001_market_data_base.sql`
 - `migrations/hypertrader/000001_hypertrader_base.sql`
 - `migrations/hypertrader/000002_hypertrader_orders_audit.sql`
+- `migrations/hypertrader/000003_hypertrader_live_state.sql`
