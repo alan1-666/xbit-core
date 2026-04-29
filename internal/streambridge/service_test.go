@@ -64,6 +64,36 @@ func TestPublishTradingOrderUpdateMapsUserTopic(t *testing.T) {
 	}
 }
 
+func TestPublishHypertraderEventsMapUserTopics(t *testing.T) {
+	cases := []struct {
+		eventType string
+		topic     string
+	}{
+		{EventHypertraderOrderUpdated, "users/0xabc/hypertrader/order_updated"},
+		{EventHypertraderFillCreated, "users/0xabc/hypertrader/fill_created"},
+		{EventHypertraderOpenOrders, "users/0xabc/hypertrader/open_orders"},
+		{EventHypertraderAccountUpdated, "users/0xabc/hypertrader/account_updated"},
+		{EventHypertraderPositionUpdated, "users/0xabc/hypertrader/position_updated"},
+		{EventHypertraderFundingUpdated, "users/0xabc/hypertrader/funding_updated"},
+		{EventHypertraderLedgerUpdated, "users/0xabc/hypertrader/ledger_updated"},
+		{EventHypertraderRawEvent, "users/0xabc/hypertrader/event"},
+	}
+	for _, tc := range cases {
+		svc := NewService(NewMemoryPublisher())
+		result, err := svc.Publish(context.Background(), Event{
+			Type:    tc.eventType,
+			UserID:  "0xabc",
+			Payload: map[string]any{"ok": true},
+		})
+		if err != nil {
+			t.Fatalf("%s publish: %v", tc.eventType, err)
+		}
+		if len(result.Topics) != 1 || result.Topics[0] != tc.topic {
+			t.Fatalf("%s topics = %+v", tc.eventType, result.Topics)
+		}
+	}
+}
+
 func TestPublishRejectsUnknownEventWithoutTopic(t *testing.T) {
 	svc := NewService(NewMemoryPublisher())
 	if _, err := svc.Publish(context.Background(), Event{Type: "unknown"}); err == nil {

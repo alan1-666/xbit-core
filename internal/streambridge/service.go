@@ -197,6 +197,46 @@ func (s *Service) resolveTopics(event Event) []string {
 			return nil
 		}
 		return []string{"users/" + topicPart(event.UserID) + "/order_updated"}
+	case EventHypertraderOrderUpdated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/order_updated"}
+	case EventHypertraderFillCreated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/fill_created"}
+	case EventHypertraderOpenOrders:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/open_orders"}
+	case EventHypertraderAccountUpdated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/account_updated"}
+	case EventHypertraderPositionUpdated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/position_updated"}
+	case EventHypertraderFundingUpdated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/funding_updated"}
+	case EventHypertraderLedgerUpdated:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/ledger_updated"}
+	case EventHypertraderRawEvent:
+		if event.UserID == "" {
+			return nil
+		}
+		return []string{"users/" + topicPart(event.UserID) + "/hypertrader/event"}
 	default:
 		return nil
 	}

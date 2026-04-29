@@ -256,6 +256,18 @@ HYPERLIQUID_API_URL=https://api.hyperliquid.xyz \
 SERVICE_ADDR=:8086 go run ./cmd/hypertrader
 ```
 
+Run with Hyperliquid private WebSocket to MQTT enabled:
+
+```bash
+HYPERLIQUID_WS_ENABLED=true \
+HYPERLIQUID_WS_USERS=0xabc,0xdef \
+MQTT_ENABLED=true \
+MQTT_BROKER_URL=tcp://localhost:1883 \
+SERVICE_ADDR=:8086 go run ./cmd/hypertrader
+```
+
+The WS bridge subscribes to Hyperliquid `orderUpdates`, `userEvents`, `userFills`, `userFundings`, `userNonFundingLedgerUpdates`, `openOrders` and `clearinghouseState`, then publishes normalized MQTT envelopes through the same stream-bridge publisher. If `MQTT_ENABLED=false`, the bridge uses the in-memory publisher and exposes recent events under `/v1/stream/*` on the hypertrader service for local dry-runs.
+
 Implemented endpoints:
 
 - `GET /healthz`
@@ -297,6 +309,24 @@ Provider modes:
 
 - `HYPERLIQUID_PROVIDER_MODE=local`: default for local development; deterministic signing, seeded account/funding data.
 - `HYPERLIQUID_PROVIDER_MODE=http`: reads account state, fills, open orders, funding history and order status from Hyperliquid `/info`; `/exchange` writes are forwarded only when the request contains an already-signed `exchangePayload` with `action`, `nonce` and `signature`.
+
+Hyperliquid WS settings:
+
+- `HYPERLIQUID_WS_ENABLED=true`: starts the private WS bridge in `cmd/hypertrader`.
+- `HYPERLIQUID_WS_URL=wss://api.hyperliquid.xyz/ws`: override for testnet or local mocks.
+- `HYPERLIQUID_WS_USERS=0xabc,0xdef`: comma-separated user addresses to subscribe.
+- `HYPERLIQUID_WS_DEX=`: optional perp dex name for dex-aware subscriptions.
+
+Private MQTT topics:
+
+- `users/{userAddress}/hypertrader/order_updated`
+- `users/{userAddress}/hypertrader/fill_created`
+- `users/{userAddress}/hypertrader/open_orders`
+- `users/{userAddress}/hypertrader/account_updated`
+- `users/{userAddress}/hypertrader/position_updated`
+- `users/{userAddress}/hypertrader/funding_updated`
+- `users/{userAddress}/hypertrader/ledger_updated`
+- `users/{userAddress}/hypertrader/event`
 
 ## Stream Bridge Service
 

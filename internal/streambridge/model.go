@@ -12,6 +12,15 @@ const (
 	EventTradingOrderUpdated   = "trading.order.updated"
 	EventTradingOrderFailed    = "trading.order.submit_failed"
 	EventTradingOrderConfirmed = "trading.order.confirmed"
+
+	EventHypertraderOrderUpdated    = "hypertrader.order.updated"
+	EventHypertraderFillCreated     = "hypertrader.fill.created"
+	EventHypertraderOpenOrders      = "hypertrader.open_orders.snapshot"
+	EventHypertraderAccountUpdated  = "hypertrader.account.updated"
+	EventHypertraderPositionUpdated = "hypertrader.position.updated"
+	EventHypertraderFundingUpdated  = "hypertrader.funding.updated"
+	EventHypertraderLedgerUpdated   = "hypertrader.ledger.updated"
+	EventHypertraderRawEvent        = "hypertrader.event"
 )
 
 type Event struct {

@@ -37,5 +37,13 @@ All new stream-bridge publishes use this envelope. Legacy consumers can keep rea
 | `trading.order.updated` | `users/{userId}/order_updated` |
 | `trading.order.submit_failed` | `users/{userId}/order_submit_failed` |
 | `trading.order.confirmed` | `users/{userId}/order_confirmation` |
+| `hypertrader.order.updated` | `users/{userId}/hypertrader/order_updated` |
+| `hypertrader.fill.created` | `users/{userId}/hypertrader/fill_created` |
+| `hypertrader.open_orders.snapshot` | `users/{userId}/hypertrader/open_orders` |
+| `hypertrader.account.updated` | `users/{userId}/hypertrader/account_updated` |
+| `hypertrader.position.updated` | `users/{userId}/hypertrader/position_updated` |
+| `hypertrader.funding.updated` | `users/{userId}/hypertrader/funding_updated` |
+| `hypertrader.ledger.updated` | `users/{userId}/hypertrader/ledger_updated` |
+| `hypertrader.event` | `users/{userId}/hypertrader/event` |
 
 Explicit `topic` on an event bypasses mapping and publishes to that topic.

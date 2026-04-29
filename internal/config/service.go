@@ -9,22 +9,26 @@ import (
 )
 
 type Service struct {
-	Name            string
-	Addr            string
-	DatabaseDSN     string
-	JWTSigningKey   string
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
-	ShutdownTimeout time.Duration
-	DevAuthEnabled  bool
-	MQTTBrokerURL   string
-	MQTTClientID    string
-	MQTTUsername    string
-	MQTTPassword    string
-	MQTTEnabled     bool
-	HyperliquidMode string
-	HyperliquidURL  string
-	ProviderTimeout time.Duration
+	Name                 string
+	Addr                 string
+	DatabaseDSN          string
+	JWTSigningKey        string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	ShutdownTimeout      time.Duration
+	DevAuthEnabled       bool
+	MQTTBrokerURL        string
+	MQTTClientID         string
+	MQTTUsername         string
+	MQTTPassword         string
+	MQTTEnabled          bool
+	HyperliquidMode      string
+	HyperliquidURL       string
+	HyperliquidWSURL     string
+	HyperliquidWSEnabled bool
+	HyperliquidWSUsers   []string
+	HyperliquidWSDex     string
+	ProviderTimeout      time.Duration
 }
 
 func LoadService(name string, defaultAddr string) (Service, error) {
@@ -46,22 +50,26 @@ func LoadService(name string, defaultAddr string) (Service, error) {
 	}
 
 	return Service{
-		Name:            name,
-		Addr:            envOr("SERVICE_ADDR", defaultAddr),
-		DatabaseDSN:     strings.TrimSpace(os.Getenv("POSTGRES_DSN")),
-		JWTSigningKey:   envOr("JWT_SIGNING_KEY", "dev-only-change-me"),
-		AccessTokenTTL:  accessTTL,
-		RefreshTokenTTL: refreshTTL,
-		ShutdownTimeout: shutdownTimeout,
-		DevAuthEnabled:  boolEnv("DEV_AUTH_ENABLED", true),
-		MQTTBrokerURL:   strings.TrimSpace(os.Getenv("MQTT_BROKER_URL")),
-		MQTTClientID:    envOr("MQTT_CLIENT_ID", "xbit-"+name),
-		MQTTUsername:    strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
-		MQTTPassword:    strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		MQTTEnabled:     boolEnv("MQTT_ENABLED", false),
-		HyperliquidMode: strings.ToLower(envOr("HYPERLIQUID_PROVIDER_MODE", "local")),
-		HyperliquidURL:  envOr("HYPERLIQUID_API_URL", "https://api.hyperliquid.xyz"),
-		ProviderTimeout: providerTimeout,
+		Name:                 name,
+		Addr:                 envOr("SERVICE_ADDR", defaultAddr),
+		DatabaseDSN:          strings.TrimSpace(os.Getenv("POSTGRES_DSN")),
+		JWTSigningKey:        envOr("JWT_SIGNING_KEY", "dev-only-change-me"),
+		AccessTokenTTL:       accessTTL,
+		RefreshTokenTTL:      refreshTTL,
+		ShutdownTimeout:      shutdownTimeout,
+		DevAuthEnabled:       boolEnv("DEV_AUTH_ENABLED", true),
+		MQTTBrokerURL:        strings.TrimSpace(os.Getenv("MQTT_BROKER_URL")),
+		MQTTClientID:         envOr("MQTT_CLIENT_ID", "xbit-"+name),
+		MQTTUsername:         strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
+		MQTTPassword:         strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
+		MQTTEnabled:          boolEnv("MQTT_ENABLED", false),
+		HyperliquidMode:      strings.ToLower(envOr("HYPERLIQUID_PROVIDER_MODE", "local")),
+		HyperliquidURL:       envOr("HYPERLIQUID_API_URL", "https://api.hyperliquid.xyz"),
+		HyperliquidWSURL:     envOr("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws"),
+		HyperliquidWSEnabled: boolEnv("HYPERLIQUID_WS_ENABLED", false),
+		HyperliquidWSUsers:   listEnv("HYPERLIQUID_WS_USERS"),
+		HyperliquidWSDex:     strings.TrimSpace(os.Getenv("HYPERLIQUID_WS_DEX")),
+		ProviderTimeout:      providerTimeout,
 	}, nil
 }
 
@@ -94,4 +102,20 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func listEnv(key string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

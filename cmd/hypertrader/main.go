@@ -13,6 +13,7 @@ import (
 	"github.com/xbit/xbit-backend/internal/health"
 	"github.com/xbit/xbit-backend/internal/httpx"
 	"github.com/xbit/xbit-backend/internal/hypertrader"
+	"github.com/xbit/xbit-backend/internal/streambridge"
 )
 
 func main() {
@@ -38,12 +39,49 @@ func main() {
 		provider = hypertrader.NewHTTPProvider(cfg.HyperliquidURL, cfg.ProviderTimeout)
 	}
 
+	var streamSvc *streambridge.Service
+	var streamCancel context.CancelFunc
+	if cfg.HyperliquidWSEnabled {
+		var publisher streambridge.Publisher = streambridge.NewMemoryPublisher()
+		if cfg.MQTTEnabled {
+			publisher, err = streambridge.NewMQTTPublisher(streambridge.Config{
+				BrokerURL: cfg.MQTTBrokerURL,
+				ClientID:  cfg.MQTTClientID,
+				Username:  cfg.MQTTUsername,
+				Password:  cfg.MQTTPassword,
+				Enabled:   cfg.MQTTEnabled,
+			}, logger)
+			if err != nil {
+				logger.Error("init hyperliquid mqtt publisher", "error", err)
+				os.Exit(1)
+			}
+		}
+		streamSvc = streambridge.NewService(publisher)
+		defer streamSvc.Close()
+		var streamCtx context.Context
+		streamCtx, streamCancel = context.WithCancel(context.Background())
+		defer streamCancel()
+		bridge := hypertrader.NewHyperliquidStreamBridge(hypertrader.StreamBridgeConfig{
+			WSURL:  cfg.HyperliquidWSURL,
+			Users:  cfg.HyperliquidWSUsers,
+			Dex:    cfg.HyperliquidWSDex,
+			Logger: logger,
+		}, streamSvc)
+		go bridge.Run(streamCtx)
+	}
+
 	router := chi.NewRouter()
 	router.Use(httpx.RequestID)
 	router.Use(httpx.Recoverer(logger))
 	router.Use(httpx.AccessLog(logger))
 	health.Register(router, cfg.Name)
 	hypertrader.NewHandler(hypertrader.NewServiceWithProvider(store, provider)).RegisterRoutes(router)
+	if streamSvc != nil {
+		streambridge.NewHandler(streamSvc).RegisterRoutes(router)
+	}
 
 	app.RunHTTPServer(cfg.Name, cfg.Addr, router, logger, cfg.ShutdownTimeout)
+	if streamCancel != nil {
+		streamCancel()
+	}
 }
