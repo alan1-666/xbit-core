@@ -81,12 +81,28 @@ func TestServiceOrderLifecycle(t *testing.T) {
 		t.Fatalf("idempotent order mismatch: got %s want %s", duplicate.ID, order.ID)
 	}
 
+	synced, err := service.SyncOrderStatus(ctx, OrderStatusInput{OrderID: order.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced.Status != "submitted" {
+		t.Fatalf("unexpected synced order: %+v", synced)
+	}
+
 	cancelled, err := service.CancelOrder(ctx, CancelOrderInput{OrderID: order.ID, UserID: "user-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cancelled.Status != "cancelled" || cancelled.CancelledAt == nil {
 		t.Fatalf("unexpected cancelled order: %+v", cancelled)
+	}
+
+	resynced, err := service.SyncOrderStatus(ctx, OrderStatusInput{OrderID: order.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resynced.Status != "cancelled" {
+		t.Fatalf("terminal status should not be downgraded: %+v", resynced)
 	}
 
 	if _, err := service.UpdateLeverage(ctx, UpdateLeverageInput{UserID: "user-1", Symbol: "BTC", Leverage: 10, IsCross: true}); err != nil {
@@ -96,7 +112,7 @@ func TestServiceOrderLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) < 3 {
+	if len(events) < 5 {
 		t.Fatalf("expected audit events, got %+v", events)
 	}
 }

@@ -146,6 +146,53 @@ func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) (Futu
 	return updated, nil
 }
 
+func (s *Service) SyncOrderStatus(ctx context.Context, input OrderStatusInput) (FuturesOrder, error) {
+	input.OrderID = strings.TrimSpace(input.OrderID)
+	if input.OrderID == "" {
+		return FuturesOrder{}, fmt.Errorf("orderId is required")
+	}
+	order, err := s.store.GetOrder(ctx, input.OrderID)
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+
+	input.UserID = firstNonEmpty(input.UserID, order.UserID)
+	input.UserAddress = firstNonEmpty(input.UserAddress, order.UserAddress)
+	input.ProviderOrderID = firstNonEmpty(input.ProviderOrderID, order.ProviderOrderID)
+	input.Cloid = firstNonEmpty(input.Cloid, order.Cloid)
+	input.Symbol = firstNonEmpty(input.Symbol, order.Symbol)
+
+	status, err := s.provider.OrderStatus(ctx, input)
+	if err != nil {
+		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.order_status_sync_failed", "medium", map[string]any{"orderId": input.OrderID, "providerOrderId": input.ProviderOrderID, "cloid": input.Cloid, "error": err.Error()})
+		return FuturesOrder{}, err
+	}
+
+	nextStatus := mergeSyncedOrderStatus(order.Status, normalizeProviderOrderStatus(status.Status))
+	updatedAt := status.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = s.now().UTC()
+	}
+	var cancelledAt *time.Time
+	if nextStatus == "cancelled" && order.CancelledAt == nil {
+		cancelledAt = &updatedAt
+	}
+
+	updated, err := s.store.UpdateOrder(ctx, FuturesOrder{
+		ID:              order.ID,
+		Status:          nextStatus,
+		Provider:        s.provider.Name(),
+		ProviderOrderID: firstNonEmpty(status.ProviderOrderID, order.ProviderOrderID),
+		ResponsePayload: map[string]any{"orderStatus": orderStatusPayload(status)},
+		CancelledAt:     cancelledAt,
+	})
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	_, _ = s.audit(ctx, updated.UserID, updated.UserAddress, "hyperliquid.order_status_synced", "medium", map[string]any{"orderId": updated.ID, "providerOrderId": updated.ProviderOrderID, "status": updated.Status, "providerStatus": status.Status})
+	return updated, nil
+}
+
 func (s *Service) Orders(ctx context.Context, filter OrderFilter) ([]FuturesOrder, error) {
 	return s.store.ListOrders(ctx, filter)
 }
@@ -347,5 +394,63 @@ func providerResultPayload(result ProviderActionResult) map[string]any {
 		"signature":   result.Signature,
 		"submittedAt": result.SubmittedAt,
 		"rawPayload":  result.RawPayload,
+	}
+}
+
+func orderStatusPayload(status OrderStatus) map[string]any {
+	return map[string]any{
+		"orderId":         status.OrderID,
+		"providerOrderId": status.ProviderOrderID,
+		"cloid":           status.Cloid,
+		"symbol":          status.Symbol,
+		"status":          status.Status,
+		"filledSize":      status.FilledSize,
+		"remainingSize":   status.RemainingSize,
+		"averagePrice":    status.AveragePrice,
+		"rawPayload":      status.RawPayload,
+		"updatedAt":       status.UpdatedAt,
+	}
+}
+
+func normalizeProviderOrderStatus(status string) string {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "", "ok", "order", "open", "resting", "submitted", "triggered":
+		return "submitted"
+	case "filled":
+		return "filled"
+	case "cancelled", "canceled":
+		return "cancelled"
+	case "rejected", "failed":
+		return "failed"
+	case "unknown", "unknownoid":
+		return "unknown"
+	default:
+		if strings.Contains(normalized, "cancel") {
+			return "cancelled"
+		}
+		if strings.Contains(normalized, "reject") {
+			return "failed"
+		}
+		return normalized
+	}
+}
+
+func mergeSyncedOrderStatus(current string, next string) string {
+	if strings.TrimSpace(next) == "" {
+		return current
+	}
+	if terminalOrderStatus(current) && next == "submitted" {
+		return current
+	}
+	return next
+}
+
+func terminalOrderStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "filled", "failed", "rejected":
+		return true
+	default:
+		return false
 	}
 }

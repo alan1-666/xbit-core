@@ -20,6 +20,25 @@ func TestHTTPProviderInfoEndpoints(t *testing.T) {
 		switch req["type"] {
 		case "fundingHistory":
 			writeProviderJSON(t, w, []map[string]any{{"coin": req["coin"], "fundingRate": "0.00012", "premium": "0.00001", "time": float64(1710000000000)}})
+		case "orderStatus":
+			if req["user"] != "0xuser" || req["oid"] == nil {
+				t.Fatalf("unexpected order status request: %+v", req)
+			}
+			writeProviderJSON(t, w, map[string]any{
+				"status": "order",
+				"order": map[string]any{
+					"status":          "open",
+					"statusTimestamp": float64(1710000000000),
+					"order": map[string]any{
+						"coin":    "BTC",
+						"limitPx": "95000",
+						"oid":     float64(12345),
+						"origSz":  "0.1",
+						"sz":      "0.04",
+						"cloid":   "0xabc",
+					},
+				},
+			})
 		case "clearinghouseState":
 			writeProviderJSON(t, w, map[string]any{
 				"marginSummary": map[string]any{"accountValue": "1200", "totalRawUsd": "1190"},
@@ -51,6 +70,14 @@ func TestHTTPProviderInfoEndpoints(t *testing.T) {
 	}
 	if account.Balance != "1200" || len(account.Positions) != 1 || account.Positions[0].Coin != "BTC" {
 		t.Fatalf("unexpected account: %+v", account)
+	}
+
+	status, err := provider.OrderStatus(t.Context(), OrderStatusInput{UserAddress: "0xuser", ProviderOrderID: "12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "open" || status.ProviderOrderID != "12345" || status.FilledSize != "0.06" {
+		t.Fatalf("unexpected order status: %+v", status)
 	}
 }
 

@@ -17,6 +17,7 @@ type Provider interface {
 	Sign(ctx context.Context, action string, userID string, payload map[string]any) (ProviderActionResult, error)
 	SubmitOrder(ctx context.Context, order FuturesOrder) (ProviderActionResult, error)
 	CancelOrder(ctx context.Context, input CancelOrderInput) (ProviderActionResult, error)
+	OrderStatus(ctx context.Context, input OrderStatusInput) (OrderStatus, error)
 	UpdateLeverage(ctx context.Context, input UpdateLeverageInput) (ProviderActionResult, error)
 	FundingRates(ctx context.Context, symbol string, limit int) ([]FundingRate, error)
 }
@@ -112,6 +113,22 @@ func (p *LocalProvider) CancelOrder(ctx context.Context, input CancelOrderInput)
 	}
 	result.Status = "cancelled"
 	return result, nil
+}
+
+func (p *LocalProvider) OrderStatus(_ context.Context, input OrderStatusInput) (OrderStatus, error) {
+	now := p.now().UTC()
+	return OrderStatus{
+		OrderID:         strings.TrimSpace(input.OrderID),
+		ProviderOrderID: firstNonEmpty(input.ProviderOrderID, input.OrderID),
+		Cloid:           strings.TrimSpace(input.Cloid),
+		Symbol:          strings.ToUpper(strings.TrimSpace(input.Symbol)),
+		Status:          "submitted",
+		RawPayload: map[string]any{
+			"provider": p.Name(),
+			"mode":     "local",
+		},
+		UpdatedAt: now,
+	}, nil
 }
 
 func (p *LocalProvider) UpdateLeverage(ctx context.Context, input UpdateLeverageInput) (ProviderActionResult, error) {

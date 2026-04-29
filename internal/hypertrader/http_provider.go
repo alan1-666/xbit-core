@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,6 +98,25 @@ func (p *HTTPProvider) CancelOrder(ctx context.Context, input CancelOrderInput) 
 	return providerActionFromHTTP("cancelOrder", p.Name(), raw, payload, p.now().UTC()), nil
 }
 
+func (p *HTTPProvider) OrderStatus(ctx context.Context, input OrderStatusInput) (OrderStatus, error) {
+	userAddress := strings.TrimSpace(input.UserAddress)
+	if userAddress == "" {
+		return OrderStatus{}, fmt.Errorf("userAddress is required for http provider order status")
+	}
+	oid, err := orderStatusOID(input)
+	if err != nil {
+		return OrderStatus{}, err
+	}
+	request := map[string]any{"type": "orderStatus", "user": userAddress, "oid": oid}
+	var raw map[string]any
+	if err := p.info(ctx, request, &raw); err != nil {
+		return OrderStatus{}, err
+	}
+	status := orderStatusFromHTTP(input, raw, p.now().UTC())
+	status.RawPayload = map[string]any{"request": request, "response": raw}
+	return status, nil
+}
+
 func (p *HTTPProvider) UpdateLeverage(ctx context.Context, input UpdateLeverageInput) (ProviderActionResult, error) {
 	payload, err := signedExchangePayload(map[string]any{"exchangePayload": input.ExchangePayload})
 	if err != nil {
@@ -173,7 +194,9 @@ func (p *HTTPProvider) post(ctx context.Context, path string, body any, out any)
 		_ = json.NewDecoder(res.Body).Decode(&payload)
 		return fmt.Errorf("hyperliquid %s returned %d: %v", path, res.StatusCode, payload)
 	}
-	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
+	decoder := json.NewDecoder(res.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(out); err != nil {
 		return fmt.Errorf("decode hyperliquid response: %w", err)
 	}
 	return nil
@@ -210,11 +233,132 @@ func providerActionFromHTTP(action string, provider string, raw map[string]any, 
 	return ProviderActionResult{
 		Action:      action,
 		Provider:    provider,
-		RequestID:   firstNonEmpty(stringFromAny(raw["hash"]), stringFromAny(raw["requestId"]), uuid.NewString()),
+		RequestID:   firstNonEmpty(stringFromAny(raw["hash"]), stringFromAny(raw["requestId"]), exchangeOrderID(raw), uuid.NewString()),
 		Status:      status,
 		RawPayload:  map[string]any{"request": request, "response": raw},
 		SubmittedAt: now,
 	}
+}
+
+func orderStatusOID(input OrderStatusInput) (any, error) {
+	providerOrderID := strings.TrimSpace(input.ProviderOrderID)
+	if providerOrderID != "" {
+		if parsed, err := strconv.ParseInt(providerOrderID, 10, 64); err == nil {
+			return parsed, nil
+		}
+		if strings.HasPrefix(strings.ToLower(providerOrderID), "0x") {
+			return providerOrderID, nil
+		}
+	}
+	if cloid := strings.TrimSpace(input.Cloid); cloid != "" {
+		return cloid, nil
+	}
+	if providerOrderID != "" {
+		return providerOrderID, nil
+	}
+	if orderID := strings.TrimSpace(input.OrderID); orderID != "" {
+		if parsed, err := strconv.ParseInt(orderID, 10, 64); err == nil {
+			return parsed, nil
+		}
+		return orderID, nil
+	}
+	return nil, fmt.Errorf("providerOrderId or cloid is required for order status")
+}
+
+func orderStatusFromHTTP(input OrderStatusInput, raw map[string]any, now time.Time) OrderStatus {
+	envelopeStatus := stringFromAny(raw["status"])
+	envelopeOrder := asMap(raw["order"])
+	statusItem := envelopeOrder
+	order := asMap(statusItem["order"])
+	if len(order) == 0 {
+		order = envelopeOrder
+	}
+
+	status := firstNonEmpty(stringFromAny(statusItem["status"]), stringFromAny(raw["orderStatus"]), envelopeStatus)
+	if strings.EqualFold(envelopeStatus, "unknownOid") {
+		status = "unknownOid"
+	}
+
+	remaining := stringFromAny(order["sz"])
+	original := stringFromAny(order["origSz"])
+	updatedAt := now
+	if ts := int64FromAny(statusItem["statusTimestamp"]); ts > 0 {
+		updatedAt = time.UnixMilli(ts).UTC()
+	} else if ts := int64FromAny(order["timestamp"]); ts > 0 {
+		updatedAt = time.UnixMilli(ts).UTC()
+	}
+
+	return OrderStatus{
+		OrderID:         strings.TrimSpace(input.OrderID),
+		ProviderOrderID: firstNonEmpty(stringFromAny(order["oid"]), input.ProviderOrderID),
+		Cloid:           firstNonEmpty(stringFromAny(order["cloid"]), input.Cloid),
+		Symbol:          strings.ToUpper(firstNonEmpty(input.Symbol, stringFromAny(order["coin"]))),
+		Status:          status,
+		FilledSize:      decimalDifference(original, remaining),
+		RemainingSize:   remaining,
+		AveragePrice:    firstNonEmpty(stringFromAny(statusItem["avgPx"]), stringFromAny(order["avgPx"]), stringFromAny(order["limitPx"])),
+		UpdatedAt:       updatedAt,
+	}
+}
+
+func exchangeOrderID(raw map[string]any) string {
+	response := asMap(raw["response"])
+	data := asMap(response["data"])
+	statuses, _ := data["statuses"].([]any)
+	for _, item := range statuses {
+		status := asMap(item)
+		for _, key := range []string{"resting", "filled"} {
+			if id := stringFromAny(asMap(status[key])["oid"]); id != "" {
+				return id
+			}
+		}
+		if id := stringFromAny(status["oid"]); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func decimalDifference(original string, remaining string) string {
+	original = strings.TrimSpace(original)
+	remaining = strings.TrimSpace(remaining)
+	if original == "" || remaining == "" {
+		return ""
+	}
+	originalDecimal, ok := new(big.Rat).SetString(original)
+	if !ok {
+		return ""
+	}
+	remainingDecimal, ok := new(big.Rat).SetString(remaining)
+	if !ok {
+		return ""
+	}
+	diff := new(big.Rat).Sub(originalDecimal, remainingDecimal)
+	if diff.Sign() < 0 {
+		return ""
+	}
+	out := diff.FloatString(maxFractionDigits(original, remaining))
+	if strings.Contains(out, ".") {
+		return strings.TrimRight(strings.TrimRight(out, "0"), ".")
+	}
+	return out
+}
+
+func maxFractionDigits(values ...string) int {
+	maxDigits := 0
+	for _, value := range values {
+		if idx := strings.IndexByte(value, '.'); idx >= 0 {
+			maxDigits = maxInt(maxDigits, len(value)-idx-1)
+		}
+	}
+	return maxDigits
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func accountFromClearinghouseState(userAddress string, raw map[string]any, now time.Time) AccountBalance {

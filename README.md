@@ -272,6 +272,7 @@ Implemented endpoints:
 - `GET /v1/futures/orders?userId=...&status=...`
 - `POST /v1/futures/orders`
 - `POST /v1/futures/orders/{orderId}/cancel`
+- `POST /v1/futures/orders/{orderId}/sync`
 - `POST /v1/futures/leverage`
 - `GET /v1/futures/audit-events?userId=...`
 
@@ -283,14 +284,17 @@ curl -sS 'http://127.0.0.1:8086/v1/futures/account?userAddress=0xabc'
 curl -sS -X POST http://127.0.0.1:8086/v1/futures/orders \
   -H 'content-type: application/json' \
   -d '{"userId":"local-user","userAddress":"0xabc","symbol":"BTC","side":"buy","orderType":"market","size":"0.1","clientRequestId":"local-futures-1"}'
+curl -sS -X POST http://127.0.0.1:8086/v1/futures/orders/{orderId}/sync \
+  -H 'content-type: application/json' \
+  -d '{}'
 ```
 
-The GraphQL facade currently covers the frontend's futures symbol, account, Hyperliquid signing, order lifecycle and Smart Money address-management operations. It uses seeded in-memory data and the local Hyperliquid provider locally, then switches persistence to Postgres when `POSTGRES_DSN` is set.
+The GraphQL facade currently covers the frontend's futures symbol, account, Hyperliquid signing, order lifecycle, order status sync and Smart Money address-management operations. It uses seeded in-memory data and the local Hyperliquid provider locally, then switches persistence to Postgres when `POSTGRES_DSN` is set.
 
 Provider modes:
 
 - `HYPERLIQUID_PROVIDER_MODE=local`: default for local development; deterministic signing, seeded account/funding data.
-- `HYPERLIQUID_PROVIDER_MODE=http`: reads account state and funding history from Hyperliquid `/info`; `/exchange` writes are forwarded only when the request contains an already-signed `exchangePayload` with `action`, `nonce` and `signature`.
+- `HYPERLIQUID_PROVIDER_MODE=http`: reads account state, funding history and order status from Hyperliquid `/info`; `/exchange` writes are forwarded only when the request contains an already-signed `exchangePayload` with `action`, `nonce` and `signature`.
 
 ## Stream Bridge Service
 

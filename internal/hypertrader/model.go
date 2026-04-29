@@ -134,6 +134,28 @@ type CancelOrderInput struct {
 	ExchangePayload map[string]any `json:"exchangePayload,omitempty"`
 }
 
+type OrderStatusInput struct {
+	UserID          string `json:"userId"`
+	UserAddress     string `json:"userAddress"`
+	OrderID         string `json:"orderId"`
+	ProviderOrderID string `json:"providerOrderId"`
+	Cloid           string `json:"cloid"`
+	Symbol          string `json:"symbol"`
+}
+
+type OrderStatus struct {
+	OrderID         string         `json:"orderId"`
+	ProviderOrderID string         `json:"providerOrderId"`
+	Cloid           string         `json:"cloid,omitempty"`
+	Symbol          string         `json:"symbol,omitempty"`
+	Status          string         `json:"status"`
+	FilledSize      string         `json:"filledSize,omitempty"`
+	RemainingSize   string         `json:"remainingSize,omitempty"`
+	AveragePrice    string         `json:"averagePrice,omitempty"`
+	RawPayload      map[string]any `json:"rawPayload,omitempty"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
+}
+
 type UpdateLeverageInput struct {
 	UserID          string         `json:"userId"`
 	UserAddress     string         `json:"userAddress"`

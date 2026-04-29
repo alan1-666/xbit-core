@@ -44,6 +44,12 @@ func TestHypertraderHTTPFlow(t *testing.T) {
 		t.Fatalf("unexpected order body: %s", createRec.Body.String())
 	}
 
+	syncRec := httptest.NewRecorder()
+	router.ServeHTTP(syncRec, httptest.NewRequest(http.MethodPost, "/v1/futures/orders/"+createBody.Data.ID+"/sync", nil))
+	if syncRec.Code != http.StatusOK || !strings.Contains(syncRec.Body.String(), `"status":"submitted"`) {
+		t.Fatalf("sync status = %d body = %s", syncRec.Code, syncRec.Body.String())
+	}
+
 	cancelRec := httptest.NewRecorder()
 	router.ServeHTTP(cancelRec, httptest.NewRequest(http.MethodPost, "/v1/futures/orders/"+createBody.Data.ID+"/cancel", strings.NewReader(`{"userId":"user-1"}`)))
 	if cancelRec.Code != http.StatusOK || !strings.Contains(cancelRec.Body.String(), `"status":"cancelled"`) {
@@ -129,6 +135,16 @@ func TestHypertraderGraphQLFacades(t *testing.T) {
 	order := orderBody["data"].(map[string]any)["createHyperLiquidOrder"].(map[string]any)
 	if order["status"] != "submitted" || order["providerOrderId"] == "" {
 		t.Fatalf("unexpected gql order: %+v", order)
+	}
+
+	syncedOrderBody := postHyperGraphQL(t, router, "/api/dex-hypertrader/graphql", `{
+		"operationName":"SyncHyperLiquidOrderStatus",
+		"query":"mutation SyncHyperLiquidOrderStatus($input: OrderStatusInput!) { syncHyperLiquidOrderStatus(input: $input) { id status providerOrderId } }",
+		"variables":{"input":{"orderId":"`+order["id"].(string)+`"}}
+	}`)
+	syncedOrder := syncedOrderBody["data"].(map[string]any)["syncHyperLiquidOrderStatus"].(map[string]any)
+	if syncedOrder["status"] != "submitted" {
+		t.Fatalf("unexpected synced gql order: %+v", syncedOrder)
 	}
 
 	rates := postHyperGraphQL(t, router, "/api/dex-hypertrader/graphql", `{

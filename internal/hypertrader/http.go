@@ -38,6 +38,7 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 		r.Get("/orders", h.orders)
 		r.Post("/orders", h.createOrder)
 		r.Post("/orders/{orderId}/cancel", h.cancelOrder)
+		r.Post("/orders/{orderId}/sync", h.syncOrderStatus)
 		r.Post("/leverage", h.updateLeverage)
 		r.Get("/audit-events", h.auditEvents)
 	})
@@ -96,6 +97,19 @@ func (h *Handler) cancelOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	input.OrderID = firstNonEmpty(input.OrderID, chi.URLParam(r, "orderId"))
 	order, err := h.service.CancelOrder(r.Context(), input)
+	h.writeResult(w, order, err)
+}
+
+func (h *Handler) syncOrderStatus(w http.ResponseWriter, r *http.Request) {
+	var input OrderStatusInput
+	if r.ContentLength != 0 {
+		if err := httpx.DecodeJSON(r, &input); err != nil {
+			h.writeResult(w, nil, err)
+			return
+		}
+	}
+	input.OrderID = firstNonEmpty(input.OrderID, chi.URLParam(r, "orderId"))
+	order, err := h.service.SyncOrderStatus(r.Context(), input)
 	h.writeResult(w, order, err)
 }
 

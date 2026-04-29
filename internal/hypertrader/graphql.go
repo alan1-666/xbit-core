@@ -159,6 +159,19 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 			return nil, err
 		}
 		return map[string]any{"cancelHyperLiquidOrder": graphQLFuturesOrder(order)}, nil
+	case "gethyperliquidorderstatus", "synchyperliquidorderstatus":
+		order, err := h.service.SyncOrderStatus(ctx, OrderStatusInput{
+			UserID:          stringValue(input, "userId"),
+			UserAddress:     stringValue(input, "userAddress"),
+			OrderID:         stringValue(input, "orderId", "id"),
+			ProviderOrderID: stringValue(input, "providerOrderId", "oid"),
+			Cloid:           stringValue(input, "cloid", "clientOrderId"),
+			Symbol:          stringValue(input, "symbol", "coin"),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{graphQLOperationKey(operation): graphQLFuturesOrder(order)}, nil
 	case "updatehyperliquidleverage":
 		result, err := h.service.UpdateLeverage(ctx, UpdateLeverageInput{
 			UserID:          stringValue(input, "userId"),
@@ -321,7 +334,7 @@ func inferOperationName(operationName string, query string) string {
 	if strings.TrimSpace(operationName) != "" {
 		return strings.TrimSpace(operationName)
 	}
-	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
+	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "GetHyperLiquidOrderStatus", "SyncHyperLiquidOrderStatus", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
 	for _, name := range known {
 		if strings.Contains(query, name) {
 			return name
