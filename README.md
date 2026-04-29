@@ -91,6 +91,7 @@ VITE_GRAPHQL_USER_HTTP_URL=http://localhost:8080/api/user/user-gql
 The gateway itself uses `XBIT_UPSTREAM_*` variables to decide where each request is proxied.
 For local market-data testing, point `XBIT_UPSTREAM_MEME2_GRAPHQL_URL` and optionally `XBIT_UPSTREAM_CORE_GRAPHQL_URL` to `http://localhost:8084/graphql`.
 For local futures/Hyperliquid testing, point `XBIT_UPSTREAM_SYMBOL_DEX_GRAPHQL_URL` and `XBIT_UPSTREAM_DEX_HYPERTRADER_GRAPHQL_URL` to `http://localhost:8086/graphql`. `XBIT_UPSTREAM_USER_GRAPHQL_URL` can point there only for isolated Hyperliquid signing smoke tests; normal user gql traffic should stay on the identity/user upstream.
+For direct `xbit-web` local integration without the gateway, start `cmd/hypertrader` and run `VITE_LOCAL_HYPERTRADER_PROXY_TARGET=http://127.0.0.1:18086 pnpm --dir apps/host dev:hypertrader:local` from the frontend repo.
 
 ## Identity Service
 
