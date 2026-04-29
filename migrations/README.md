@@ -22,3 +22,4 @@ Current initial migration sets:
 - `hypertrader/000001_hypertrader_base.sql`
 - `hypertrader/000002_hypertrader_orders_audit.sql`
 - `hypertrader/000003_hypertrader_live_state.sql`
+- `hypertrader/000004_hypertrader_agent_signer.sql`

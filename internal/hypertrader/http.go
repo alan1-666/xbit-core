@@ -41,6 +41,10 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 		r.Post("/orders/{orderId}/cancel", h.cancelOrder)
 		r.Post("/orders/{orderId}/sync", h.syncOrderStatus)
 		r.Post("/leverage", h.updateLeverage)
+		r.Get("/agent-wallets", h.agentWallets)
+		r.Post("/agent-wallets", h.createAgentWallet)
+		r.Post("/agent-wallets/activate", h.activateAgentWallet)
+		r.Post("/agent-sign", h.agentSign)
 		r.Get("/audit-events", h.auditEvents)
 	})
 }
@@ -128,6 +132,41 @@ func (h *Handler) updateLeverage(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.UpdateLeverage(r.Context(), input)
 	h.writeResult(w, result, err)
+}
+
+func (h *Handler) agentWallets(w http.ResponseWriter, r *http.Request) {
+	wallets, err := h.service.AgentWallets(r.Context(), r.URL.Query().Get("userAddress"))
+	h.writeResult(w, wallets, err)
+}
+
+func (h *Handler) createAgentWallet(w http.ResponseWriter, r *http.Request) {
+	var input CreateAgentWalletInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		h.writeResult(w, nil, err)
+		return
+	}
+	approval, err := h.service.CreateAgentWallet(r.Context(), input)
+	h.writeResult(w, approval, err)
+}
+
+func (h *Handler) activateAgentWallet(w http.ResponseWriter, r *http.Request) {
+	var input ActivateAgentWalletInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		h.writeResult(w, nil, err)
+		return
+	}
+	wallet, err := h.service.ActivateAgentWallet(r.Context(), input)
+	h.writeResult(w, wallet, err)
+}
+
+func (h *Handler) agentSign(w http.ResponseWriter, r *http.Request) {
+	var input AgentSignInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		h.writeResult(w, nil, err)
+		return
+	}
+	signed, err := h.service.AgentSign(r.Context(), input)
+	h.writeResult(w, signed, err)
 }
 
 func (h *Handler) auditEvents(w http.ResponseWriter, r *http.Request) {

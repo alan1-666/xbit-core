@@ -10,9 +10,10 @@ import (
 )
 
 type Service struct {
-	store    Store
-	provider Provider
-	now      func() time.Time
+	store       Store
+	provider    Provider
+	agentSigner *AgentSigner
+	now         func() time.Time
 }
 
 func NewService(store Store) *Service {
@@ -20,13 +21,17 @@ func NewService(store Store) *Service {
 }
 
 func NewServiceWithProvider(store Store, provider Provider) *Service {
+	return NewServiceWithProviderAndSigner(store, provider, nil)
+}
+
+func NewServiceWithProviderAndSigner(store Store, provider Provider, agentSigner *AgentSigner) *Service {
 	if store == nil {
 		store = NewMemoryStore()
 	}
 	if provider == nil {
 		provider = NewLocalProvider()
 	}
-	return &Service{store: store, provider: provider, now: time.Now}
+	return &Service{store: store, provider: provider, agentSigner: agentSigner, now: time.Now}
 }
 
 func (s *Service) ListSymbols(ctx context.Context, query string, category string, limit int) ([]Symbol, error) {
@@ -117,6 +122,22 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Futu
 	if err != nil {
 		return FuturesOrder{}, err
 	}
+	if len(input.ExchangePayload) == 0 {
+		if signed, signErr := s.signExchangeAction(ctx, AgentSignInput{
+			UserID:         order.UserID,
+			UserAddress:    order.UserAddress,
+			Action:         "order",
+			Symbol:         order.Symbol,
+			Payload:        order.RawPayload,
+			ExchangeAction: exchangeActionFromPayload(order.RawPayload),
+		}); signErr == nil {
+			order.RawPayload["exchangePayload"] = signed.ExchangePayload
+			order.ResponsePayload["agentSigner"] = agentSignedPayload(signed)
+		} else if s.agentSigner != nil && s.agentSigner.Enabled() {
+			_, _ = s.audit(ctx, order.UserID, order.UserAddress, "hyperliquid.agent_sign_failed", "high", map[string]any{"action": "order", "error": signErr.Error()})
+			return FuturesOrder{}, signErr
+		}
+	}
 	created, err := s.store.CreateOrder(ctx, order)
 	if err != nil {
 		return FuturesOrder{}, err
@@ -157,6 +178,21 @@ func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) (Futu
 	input.UserAddress = firstNonEmpty(input.UserAddress, order.UserAddress)
 	input.Symbol = firstNonEmpty(input.Symbol, order.Symbol)
 	input.Cloid = firstNonEmpty(input.Cloid, order.Cloid)
+	if len(input.ExchangePayload) == 0 {
+		if signed, signErr := s.signExchangeAction(ctx, AgentSignInput{
+			UserID:         input.UserID,
+			UserAddress:    input.UserAddress,
+			Action:         "cancel",
+			Symbol:         input.Symbol,
+			Payload:        map[string]any{"orderId": input.OrderID, "cloid": input.Cloid, "symbol": input.Symbol, "exchangeAction": input.ExchangeAction},
+			ExchangeAction: input.ExchangeAction,
+		}); signErr == nil {
+			input.ExchangePayload = signed.ExchangePayload
+		} else if s.agentSigner != nil && s.agentSigner.Enabled() {
+			_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.agent_sign_failed", "high", map[string]any{"action": "cancel", "orderId": input.OrderID, "error": signErr.Error()})
+			return FuturesOrder{}, signErr
+		}
+	}
 	result, err := s.provider.CancelOrder(ctx, input)
 	if err != nil {
 		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.order_cancel_failed", "high", map[string]any{"orderId": input.OrderID, "error": err.Error()})
@@ -237,6 +273,22 @@ func (s *Service) UpdateLeverage(ctx context.Context, input UpdateLeverageInput)
 	if input.Leverage <= 0 || input.Leverage > 100 {
 		return ProviderActionResult{}, fmt.Errorf("leverage must be between 1 and 100")
 	}
+	if len(input.ExchangePayload) == 0 {
+		if signed, signErr := s.signExchangeAction(ctx, AgentSignInput{
+			UserID:         input.UserID,
+			UserAddress:    input.UserAddress,
+			Action:         "updateLeverage",
+			Symbol:         input.Symbol,
+			Leverage:       input.Leverage,
+			Payload:        map[string]any{"symbol": input.Symbol, "leverage": input.Leverage, "isCross": input.IsCross, "exchangeAction": input.ExchangeAction},
+			ExchangeAction: input.ExchangeAction,
+		}); signErr == nil {
+			input.ExchangePayload = signed.ExchangePayload
+		} else if s.agentSigner != nil && s.agentSigner.Enabled() {
+			_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.agent_sign_failed", "high", map[string]any{"action": "updateLeverage", "symbol": input.Symbol, "leverage": input.Leverage, "error": signErr.Error()})
+			return ProviderActionResult{}, signErr
+		}
+	}
 	result, err := s.provider.UpdateLeverage(ctx, input)
 	if err != nil {
 		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.update_leverage_failed", "high", map[string]any{"symbol": input.Symbol, "error": err.Error()})
@@ -308,12 +360,65 @@ func (s *Service) DeleteAddress(ctx context.Context, id string) error {
 }
 
 func (s *Service) WalletStatus(ctx context.Context, userAddress string) (HyperliquidWalletStatus, error) {
-	return s.provider.WalletStatus(ctx, userAddress)
+	status, err := s.provider.WalletStatus(ctx, userAddress)
+	if err != nil {
+		return status, err
+	}
+	if s.agentSigner != nil && s.agentSigner.Enabled() {
+		if wallets, listErr := s.agentSigner.ListWallets(ctx, userAddress); listErr == nil {
+			for _, wallet := range wallets {
+				if wallet.Status == "active" {
+					status.ApprovedAgent = true
+					status.Agent = wallet.AgentAddress
+					status.AgentName = wallet.AgentName
+					break
+				}
+			}
+		}
+	}
+	return status, nil
 }
 
 func (s *Service) Sign(ctx context.Context, userID string, userAddress string, action string, payload map[string]any) (map[string]any, error) {
 	if userID == "" {
 		userID = "local-user"
+	}
+	if s.agentSigner != nil && s.agentSigner.Enabled() {
+		if strings.EqualFold(action, "approveHyperLiquidApproveAgent") {
+			approval, err := s.CreateAgentWallet(ctx, CreateAgentWalletInput{
+				UserID:           userID,
+				UserAddress:      userAddress,
+				AgentName:        stringFromAny(payload["agentName"]),
+				HyperliquidChain: stringFromAny(payload["hyperliquidChain"]),
+				SignatureChainID: stringFromAny(payload["signatureChainId"]),
+				Policy:           agentPolicyFromMap(asMap(payload["policy"])),
+			})
+			if err != nil {
+				_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.agent_create_failed", "high", map[string]any{"action": action, "error": err.Error()})
+				return nil, err
+			}
+			_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.agent_created", "high", map[string]any{"agentAddress": approval.Wallet.AgentAddress, "agentName": approval.Wallet.AgentName})
+			return map[string]any{"wallet": approval.Wallet, "approvalPayload": approval.ApprovalPayload, "status": "requires_user_signature"}, nil
+		}
+		if managedAgentAction(action) {
+			if signed, err := s.signExchangeAction(ctx, AgentSignInput{
+				UserID:         userID,
+				UserAddress:    userAddress,
+				Action:         action,
+				Symbol:         stringValue(payload, "symbol", "coin"),
+				Leverage:       intValue(payload, 0, "leverage"),
+				Payload:        payload,
+				ExchangeAction: asMap(payload["exchangeAction"]),
+				VaultAddress:   stringValue(payload, "vaultAddress"),
+				ExpiresAfter:   int64FromAny(payload["expiresAfter"]),
+			}); err == nil {
+				_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.agent_sign", "high", map[string]any{"action": signed.Action, "agentAddress": signed.AgentWallet.AgentAddress, "nonce": signed.Nonce})
+				return agentSignedPayload(signed), nil
+			} else {
+				_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.agent_sign_failed", "high", map[string]any{"action": action, "error": err.Error()})
+				return nil, err
+			}
+		}
 	}
 	result, err := s.provider.Sign(ctx, action, userID, payload)
 	if err != nil {
@@ -327,6 +432,41 @@ func (s *Service) Sign(ctx context.Context, userID string, userAddress string, a
 		"provider":  result.Provider,
 		"requestId": result.RequestID,
 	}, nil
+}
+
+func (s *Service) CreateAgentWallet(ctx context.Context, input CreateAgentWalletInput) (AgentApproval, error) {
+	if s.agentSigner == nil || !s.agentSigner.Enabled() {
+		return AgentApproval{}, fmt.Errorf("agent signer is disabled")
+	}
+	return s.agentSigner.CreateWallet(ctx, input)
+}
+
+func (s *Service) ActivateAgentWallet(ctx context.Context, input ActivateAgentWalletInput) (AgentWallet, error) {
+	if s.agentSigner == nil || !s.agentSigner.Enabled() {
+		return AgentWallet{}, fmt.Errorf("agent signer is disabled")
+	}
+	wallet, err := s.agentSigner.ActivateWallet(ctx, input)
+	if err == nil {
+		_, _ = s.audit(ctx, wallet.UserID, wallet.UserAddress, "hyperliquid.agent_status_updated", "high", map[string]any{"agentAddress": wallet.AgentAddress, "status": wallet.Status})
+	}
+	return wallet, err
+}
+
+func (s *Service) AgentWallets(ctx context.Context, userAddress string) ([]AgentWallet, error) {
+	if s.agentSigner == nil || !s.agentSigner.Enabled() {
+		return nil, fmt.Errorf("agent signer is disabled")
+	}
+	return s.agentSigner.ListWallets(ctx, userAddress)
+}
+
+func (s *Service) AgentSign(ctx context.Context, input AgentSignInput) (AgentSignedPayload, error) {
+	signed, err := s.signExchangeAction(ctx, input)
+	if err != nil {
+		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.agent_sign_failed", "high", map[string]any{"action": input.Action, "error": err.Error()})
+		return AgentSignedPayload{}, err
+	}
+	_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.agent_sign", "high", map[string]any{"action": signed.Action, "agentAddress": signed.AgentWallet.AgentAddress, "nonce": signed.Nonce})
+	return signed, nil
 }
 
 func (s *Service) GenerateCloid(count int) map[string]any {
@@ -381,6 +521,9 @@ func (s *Service) normalizeOrder(input CreateOrderInput) (FuturesOrder, error) {
 	if len(input.ExchangePayload) > 0 {
 		payload["exchangePayload"] = input.ExchangePayload
 	}
+	if len(input.ExchangeAction) > 0 {
+		payload["exchangeAction"] = input.ExchangeAction
+	}
 	return FuturesOrder{
 		ID:              uuid.NewString(),
 		UserID:          strings.TrimSpace(input.UserID),
@@ -426,6 +569,89 @@ func providerResultPayload(result ProviderActionResult) map[string]any {
 		"signature":   result.Signature,
 		"submittedAt": result.SubmittedAt,
 		"rawPayload":  result.RawPayload,
+	}
+}
+
+func (s *Service) signExchangeAction(ctx context.Context, input AgentSignInput) (AgentSignedPayload, error) {
+	if s.agentSigner == nil || !s.agentSigner.Enabled() {
+		return AgentSignedPayload{}, fmt.Errorf("agent signer is disabled")
+	}
+	return s.agentSigner.Sign(ctx, input)
+}
+
+func exchangeActionFromPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	if action := asMap(payload["exchangeAction"]); len(action) > 0 {
+		return action
+	}
+	if exchangePayload := asMap(payload["exchangePayload"]); len(exchangePayload) > 0 {
+		return asMap(exchangePayload["action"])
+	}
+	return asMap(payload["action"])
+}
+
+func agentSignedPayload(signed AgentSignedPayload) map[string]any {
+	return map[string]any{
+		"agentWallet": map[string]any{
+			"id":           signed.AgentWallet.ID,
+			"userAddress":  signed.AgentWallet.UserAddress,
+			"agentAddress": signed.AgentWallet.AgentAddress,
+			"agentName":    signed.AgentWallet.AgentName,
+			"status":       signed.AgentWallet.Status,
+		},
+		"exchangePayload": signed.ExchangePayload,
+		"signature":       signed.Signature,
+		"nonce":           signed.Nonce,
+		"action":          signed.Action,
+		"status":          signed.Status,
+	}
+}
+
+func agentPolicyFromMap(input map[string]any) AgentPolicy {
+	if len(input) == 0 {
+		return AgentPolicy{}
+	}
+	return AgentPolicy{
+		AllowedActions: stringListFromAny(input["allowedActions"]),
+		AllowedSymbols: stringListFromAny(input["allowedSymbols"]),
+		MaxLeverage:    intValue(input, 0, "maxLeverage"),
+	}
+}
+
+func stringListFromAny(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := strings.TrimSpace(stringFromAny(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case string:
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if text := strings.TrimSpace(part); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func managedAgentAction(action string) bool {
+	switch normalizeAgentAction(action) {
+	case "order", "cancel", "updateLeverage":
+		return true
+	default:
+		return false
 	}
 }
 

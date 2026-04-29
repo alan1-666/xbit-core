@@ -28,6 +28,9 @@ type Service struct {
 	HyperliquidWSEnabled bool
 	HyperliquidWSUsers   []string
 	HyperliquidWSDex     string
+	AgentSignerEnabled   bool
+	AgentSignerMode      string
+	AgentSignerMaxLev    int
 	ProviderTimeout      time.Duration
 }
 
@@ -48,6 +51,7 @@ func LoadService(name string, defaultAddr string) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	agentSignerMaxLev := intEnv("HYPERLIQUID_AGENT_MAX_LEVERAGE", 20)
 
 	return Service{
 		Name:                 name,
@@ -69,6 +73,9 @@ func LoadService(name string, defaultAddr string) (Service, error) {
 		HyperliquidWSEnabled: boolEnv("HYPERLIQUID_WS_ENABLED", false),
 		HyperliquidWSUsers:   listEnv("HYPERLIQUID_WS_USERS"),
 		HyperliquidWSDex:     strings.TrimSpace(os.Getenv("HYPERLIQUID_WS_DEX")),
+		AgentSignerEnabled:   boolEnv("HYPERLIQUID_AGENT_SIGNER_ENABLED", false),
+		AgentSignerMode:      strings.ToLower(envOr("HYPERLIQUID_AGENT_SIGNER_MODE", "dev")),
+		AgentSignerMaxLev:    agentSignerMaxLev,
 		ProviderTimeout:      providerTimeout,
 	}, nil
 }
@@ -98,6 +105,18 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func intEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
 	}

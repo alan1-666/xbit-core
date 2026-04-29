@@ -173,6 +173,40 @@ func TestHypertraderGraphQLFacades(t *testing.T) {
 	}
 }
 
+func TestHypertraderAgentSignerHTTPFlow(t *testing.T) {
+	store := NewMemoryStore()
+	signer := NewAgentSigner(store, AgentSignerConfig{Enabled: true})
+	router := chi.NewRouter()
+	NewHandler(NewServiceWithProviderAndSigner(store, NewLocalProvider(), signer)).RegisterRoutes(router)
+
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/v1/futures/agent-wallets", strings.NewReader(`{"userId":"user-1","userAddress":"0xabc","agentName":"Desk Agent"}`)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create agent status = %d body = %s", createRec.Code, createRec.Body.String())
+	}
+	var createBody struct {
+		Data AgentApproval `json:"data"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createBody); err != nil {
+		t.Fatal(err)
+	}
+	if createBody.Data.Wallet.AgentAddress == "" {
+		t.Fatalf("missing agent wallet: %s", createRec.Body.String())
+	}
+
+	activateRec := httptest.NewRecorder()
+	router.ServeHTTP(activateRec, httptest.NewRequest(http.MethodPost, "/v1/futures/agent-wallets/activate", strings.NewReader(`{"userAddress":"0xabc","agentAddress":"`+createBody.Data.Wallet.AgentAddress+`"}`)))
+	if activateRec.Code != http.StatusOK || !strings.Contains(activateRec.Body.String(), `"status":"active"`) {
+		t.Fatalf("activate agent status = %d body = %s", activateRec.Code, activateRec.Body.String())
+	}
+
+	signRec := httptest.NewRecorder()
+	router.ServeHTTP(signRec, httptest.NewRequest(http.MethodPost, "/v1/futures/agent-sign", strings.NewReader(`{"userId":"user-1","userAddress":"0xabc","action":"order","symbol":"BTC","exchangeAction":{"type":"order","orders":[]}}`)))
+	if signRec.Code != http.StatusOK || !strings.Contains(signRec.Body.String(), `"exchangePayload"`) {
+		t.Fatalf("agent sign status = %d body = %s", signRec.Code, signRec.Body.String())
+	}
+}
+
 func postHyperGraphQL(t *testing.T, router http.Handler, path string, body string) map[string]any {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))

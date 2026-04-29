@@ -143,6 +143,7 @@ type CreateOrderInput struct {
 	ReduceOnly      bool           `json:"reduceOnly"`
 	TimeInForce     string         `json:"timeInForce"`
 	ExchangePayload map[string]any `json:"exchangePayload,omitempty"`
+	ExchangeAction  map[string]any `json:"exchangeAction,omitempty"`
 	RawPayload      map[string]any `json:"rawPayload"`
 }
 
@@ -153,6 +154,7 @@ type CancelOrderInput struct {
 	Cloid           string         `json:"cloid"`
 	Symbol          string         `json:"symbol"`
 	ExchangePayload map[string]any `json:"exchangePayload,omitempty"`
+	ExchangeAction  map[string]any `json:"exchangeAction,omitempty"`
 }
 
 type OrderStatusInput struct {
@@ -184,6 +186,7 @@ type UpdateLeverageInput struct {
 	Leverage        int            `json:"leverage"`
 	IsCross         bool           `json:"isCross"`
 	ExchangePayload map[string]any `json:"exchangePayload,omitempty"`
+	ExchangeAction  map[string]any `json:"exchangeAction,omitempty"`
 }
 
 type OrderFilter struct {
@@ -202,6 +205,68 @@ type ProviderActionResult struct {
 	Signature   Signature      `json:"signature"`
 	RawPayload  map[string]any `json:"rawPayload,omitempty"`
 	SubmittedAt time.Time      `json:"submittedAt"`
+}
+
+type AgentPolicy struct {
+	AllowedActions []string `json:"allowedActions,omitempty"`
+	AllowedSymbols []string `json:"allowedSymbols,omitempty"`
+	MaxLeverage    int      `json:"maxLeverage,omitempty"`
+}
+
+type AgentWallet struct {
+	ID           string      `json:"id"`
+	UserID       string      `json:"userId,omitempty"`
+	UserAddress  string      `json:"userAddress"`
+	AgentAddress string      `json:"agentAddress"`
+	AgentName    string      `json:"agentName"`
+	Status       string      `json:"status"`
+	KeyRef       string      `json:"-"`
+	Policy       AgentPolicy `json:"policy"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	UpdatedAt    time.Time   `json:"updatedAt"`
+	ApprovedAt   *time.Time  `json:"approvedAt,omitempty"`
+}
+
+type CreateAgentWalletInput struct {
+	UserID           string      `json:"userId"`
+	UserAddress      string      `json:"userAddress"`
+	AgentName        string      `json:"agentName"`
+	HyperliquidChain string      `json:"hyperliquidChain"`
+	SignatureChainID string      `json:"signatureChainId"`
+	Policy           AgentPolicy `json:"policy"`
+}
+
+type ActivateAgentWalletInput struct {
+	UserID       string `json:"userId"`
+	UserAddress  string `json:"userAddress"`
+	AgentAddress string `json:"agentAddress"`
+	Status       string `json:"status"`
+}
+
+type AgentApproval struct {
+	Wallet          AgentWallet    `json:"wallet"`
+	ApprovalPayload map[string]any `json:"approvalPayload"`
+}
+
+type AgentSignInput struct {
+	UserID         string         `json:"userId"`
+	UserAddress    string         `json:"userAddress"`
+	Action         string         `json:"action"`
+	Symbol         string         `json:"symbol,omitempty"`
+	Leverage       int            `json:"leverage,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	ExchangeAction map[string]any `json:"exchangeAction,omitempty"`
+	VaultAddress   string         `json:"vaultAddress,omitempty"`
+	ExpiresAfter   int64          `json:"expiresAfter,omitempty"`
+}
+
+type AgentSignedPayload struct {
+	AgentWallet     AgentWallet    `json:"agentWallet"`
+	ExchangePayload map[string]any `json:"exchangePayload"`
+	Signature       Signature      `json:"signature"`
+	Nonce           int64          `json:"nonce"`
+	Action          string         `json:"action"`
+	Status          string         `json:"status"`
 }
 
 type AuditEvent struct {

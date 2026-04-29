@@ -256,6 +256,15 @@ HYPERLIQUID_API_URL=https://api.hyperliquid.xyz \
 SERVICE_ADDR=:8086 go run ./cmd/hypertrader
 ```
 
+Run with the managed agent signer enabled for local/dev flows:
+
+```bash
+HYPERLIQUID_AGENT_SIGNER_ENABLED=true \
+HYPERLIQUID_AGENT_SIGNER_MODE=dev \
+HYPERLIQUID_AGENT_MAX_LEVERAGE=20 \
+SERVICE_ADDR=:8086 go run ./cmd/hypertrader
+```
+
 Run with Hyperliquid private WebSocket to MQTT enabled:
 
 ```bash
@@ -287,6 +296,10 @@ Implemented endpoints:
 - `POST /v1/futures/orders/{orderId}/cancel`
 - `POST /v1/futures/orders/{orderId}/sync`
 - `POST /v1/futures/leverage`
+- `GET /v1/futures/agent-wallets?userAddress=...`
+- `POST /v1/futures/agent-wallets`
+- `POST /v1/futures/agent-wallets/activate`
+- `POST /v1/futures/agent-sign`
 - `GET /v1/futures/audit-events?userId=...`
 
 Examples:
@@ -309,6 +322,13 @@ Provider modes:
 
 - `HYPERLIQUID_PROVIDER_MODE=local`: default for local development; deterministic signing, seeded account/funding data.
 - `HYPERLIQUID_PROVIDER_MODE=http`: reads account state, fills, open orders, funding history and order status from Hyperliquid `/info`; `/exchange` writes are forwarded only when the request contains an already-signed `exchangePayload` with `action`, `nonce` and `signature`.
+
+Agent signer settings:
+
+- `HYPERLIQUID_AGENT_SIGNER_ENABLED=true`: enables managed agent wallet registration, activation, nonce tracking and guarded signing facades.
+- `HYPERLIQUID_AGENT_SIGNER_MODE=dev`: current signer mode. It produces deterministic development signatures and should be replaced with SDK/KMS-backed Hyperliquid signing before production exchange writes.
+- `HYPERLIQUID_AGENT_MAX_LEVERAGE=20`: default policy cap for managed agent leverage actions.
+- Managed signing only allows `order`, `cancel` and `updateLeverage`; withdrawal and transfer actions are intentionally excluded.
 
 Hyperliquid WS settings:
 
@@ -373,3 +393,4 @@ Initial migration sets:
 - `migrations/hypertrader/000001_hypertrader_base.sql`
 - `migrations/hypertrader/000002_hypertrader_orders_audit.sql`
 - `migrations/hypertrader/000003_hypertrader_live_state.sql`
+- `migrations/hypertrader/000004_hypertrader_agent_signer.sql`

@@ -46,6 +46,14 @@ type StateStore interface {
 	UpdateOrderStatusByProvider(ctx context.Context, input OrderStatusInput, status OrderStatus) error
 }
 
+type AgentStore interface {
+	SaveAgentWallet(ctx context.Context, wallet AgentWallet) (AgentWallet, error)
+	ListAgentWallets(ctx context.Context, userAddress string) ([]AgentWallet, error)
+	GetActiveAgentWallet(ctx context.Context, userAddress string) (AgentWallet, error)
+	UpdateAgentWalletStatus(ctx context.Context, userAddress string, agentAddress string, status string) (AgentWallet, error)
+	NextAgentNonce(ctx context.Context, agentAddress string, now time.Time) (int64, error)
+}
+
 type MemoryStore struct {
 	mu               sync.RWMutex
 	symbols          map[string]Symbol
@@ -58,6 +66,8 @@ type MemoryStore struct {
 	openOrders       map[string]map[string]OpenOrder
 	fills            map[string]map[string]TradeHistory
 	accountSnapshots map[string]AccountBalance
+	agentWallets     map[string]AgentWallet
+	agentNonces      map[string]int64
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -70,6 +80,8 @@ func NewMemoryStore() *MemoryStore {
 		openOrders:       map[string]map[string]OpenOrder{},
 		fills:            map[string]map[string]TradeHistory{},
 		accountSnapshots: map[string]AccountBalance{},
+		agentWallets:     map[string]AgentWallet{},
+		agentNonces:      map[string]int64{},
 	}
 	store.seed()
 	return store
@@ -524,6 +536,91 @@ func (s *MemoryStore) UpdateOrderStatusByProvider(_ context.Context, input Order
 	return nil
 }
 
+func (s *MemoryStore) SaveAgentWallet(_ context.Context, wallet AgentWallet) (AgentWallet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if wallet.ID == "" {
+		wallet.ID = uuid.NewString()
+	}
+	now := time.Now().UTC()
+	if wallet.CreatedAt.IsZero() {
+		wallet.CreatedAt = now
+	}
+	wallet.UpdatedAt = now
+	if wallet.Status == "" {
+		wallet.Status = "pending_approval"
+	}
+	if wallet.Policy.MaxLeverage == 0 {
+		wallet.Policy.MaxLeverage = 20
+	}
+	s.agentWallets[agentWalletKey(wallet.UserAddress, wallet.AgentAddress)] = wallet
+	return wallet, nil
+}
+
+func (s *MemoryStore) ListAgentWallets(_ context.Context, userAddress string) ([]AgentWallet, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AgentWallet, 0)
+	for _, wallet := range s.agentWallets {
+		if strings.EqualFold(wallet.UserAddress, userAddress) {
+			out = append(out, wallet)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out, nil
+}
+
+func (s *MemoryStore) GetActiveAgentWallet(_ context.Context, userAddress string) (AgentWallet, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest AgentWallet
+	for _, wallet := range s.agentWallets {
+		if !strings.EqualFold(wallet.UserAddress, userAddress) || wallet.Status != "active" {
+			continue
+		}
+		if latest.ID == "" || wallet.UpdatedAt.After(latest.UpdatedAt) {
+			latest = wallet
+		}
+	}
+	if latest.ID == "" {
+		return AgentWallet{}, ErrNotFound
+	}
+	return latest, nil
+}
+
+func (s *MemoryStore) UpdateAgentWalletStatus(_ context.Context, userAddress string, agentAddress string, status string) (AgentWallet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := agentWalletKey(userAddress, agentAddress)
+	wallet, ok := s.agentWallets[key]
+	if !ok {
+		return AgentWallet{}, ErrNotFound
+	}
+	wallet.Status = strings.TrimSpace(status)
+	if wallet.Status == "" {
+		wallet.Status = "active"
+	}
+	now := time.Now().UTC()
+	wallet.UpdatedAt = now
+	if wallet.Status == "active" && wallet.ApprovedAt == nil {
+		wallet.ApprovedAt = &now
+	}
+	s.agentWallets[key] = wallet
+	return wallet, nil
+}
+
+func (s *MemoryStore) NextAgentNonce(_ context.Context, agentAddress string, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(strings.TrimSpace(agentAddress))
+	next := now.UnixMilli()
+	if next <= s.agentNonces[key] {
+		next = s.agentNonces[key] + 1
+	}
+	s.agentNonces[key] = next
+	return next, nil
+}
+
 func prefKey(userID string, symbol string) string {
 	return strings.TrimSpace(userID) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
 }
@@ -576,4 +673,9 @@ func fillKey(fill TradeHistory) string {
 	return strings.Join([]string{fill.Symbol, strconv.FormatInt(fill.Time, 10), strconv.FormatInt(fill.Oid, 10), strconv.FormatInt(fill.Tid, 10)}, ":")
 }
 
+func agentWalletKey(userAddress string, agentAddress string) string {
+	return strings.ToLower(strings.TrimSpace(userAddress)) + ":" + strings.ToLower(strings.TrimSpace(agentAddress))
+}
+
 var _ StateStore = (*MemoryStore)(nil)
+var _ AgentStore = (*MemoryStore)(nil)

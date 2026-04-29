@@ -142,3 +142,61 @@ type failingOpenOrdersProvider struct {
 func (p failingOpenOrdersProvider) OpenOrders(context.Context, string) ([]OpenOrder, error) {
 	return nil, errors.New("provider unavailable")
 }
+
+func TestServiceAgentSignerLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	signer := NewAgentSigner(store, AgentSignerConfig{
+		Enabled: true,
+		DefaultPolicy: AgentPolicy{
+			AllowedActions: []string{"order", "cancel", "updateLeverage"},
+			AllowedSymbols: []string{"BTC"},
+			MaxLeverage:    5,
+		},
+	})
+	service := NewServiceWithProviderAndSigner(store, NewLocalProvider(), signer)
+
+	approval, err := service.CreateAgentWallet(ctx, CreateAgentWalletInput{UserID: "user-1", UserAddress: "0xabc", AgentName: "Desk Agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approval.Wallet.Status != "pending_approval" || approval.ApprovalPayload["action"] == nil {
+		t.Fatalf("unexpected approval: %+v", approval)
+	}
+	if _, err := service.AgentSign(ctx, AgentSignInput{UserID: "user-1", UserAddress: "0xabc", Action: "order", Symbol: "BTC", ExchangeAction: map[string]any{"type": "order", "orders": []any{}}}); err == nil {
+		t.Fatal("expected inactive agent wallet to be rejected")
+	}
+	wallet, err := service.ActivateAgentWallet(ctx, ActivateAgentWalletInput{UserAddress: "0xabc", AgentAddress: approval.Wallet.AgentAddress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.Status != "active" || wallet.ApprovedAt == nil {
+		t.Fatalf("unexpected active wallet: %+v", wallet)
+	}
+	signed, err := service.AgentSign(ctx, AgentSignInput{UserID: "user-1", UserAddress: "0xabc", Action: "order", Symbol: "BTC", ExchangeAction: map[string]any{"type": "order", "orders": []any{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed.ExchangePayload["nonce"] == nil || signed.Signature.R == "" {
+		t.Fatalf("unexpected signed payload: %+v", signed)
+	}
+	if _, err := service.AgentSign(ctx, AgentSignInput{UserID: "user-1", UserAddress: "0xabc", Action: "updateLeverage", Symbol: "BTC", Leverage: 10, ExchangeAction: map[string]any{"type": "updateLeverage"}}); err == nil {
+		t.Fatal("expected leverage policy rejection")
+	}
+	order, err := service.CreateOrder(ctx, CreateOrderInput{
+		UserID:         "user-1",
+		UserAddress:    "0xabc",
+		Symbol:         "BTC",
+		Side:           "buy",
+		OrderType:      "limit",
+		Price:          "95000",
+		Size:           "0.1",
+		ExchangeAction: map[string]any{"type": "order", "orders": []any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.ResponsePayload["agentSigner"] == nil || order.RawPayload["exchangePayload"] == nil {
+		t.Fatalf("expected managed signer payload on order: %+v", order)
+	}
+}

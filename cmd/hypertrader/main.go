@@ -38,6 +38,15 @@ func main() {
 	if cfg.HyperliquidMode == "http" {
 		provider = hypertrader.NewHTTPProvider(cfg.HyperliquidURL, cfg.ProviderTimeout)
 	}
+	agentStore, _ := store.(hypertrader.AgentStore)
+	agentSigner := hypertrader.NewAgentSigner(agentStore, hypertrader.AgentSignerConfig{
+		Enabled: cfg.AgentSignerEnabled,
+		Mode:    cfg.AgentSignerMode,
+		DefaultPolicy: hypertrader.AgentPolicy{
+			AllowedActions: []string{"order", "cancel", "updateLeverage"},
+			MaxLeverage:    cfg.AgentSignerMaxLev,
+		},
+	})
 
 	var streamSvc *streambridge.Service
 	var streamCancel context.CancelFunc
@@ -78,7 +87,7 @@ func main() {
 	router.Use(httpx.Recoverer(logger))
 	router.Use(httpx.AccessLog(logger))
 	health.Register(router, cfg.Name)
-	hypertrader.NewHandler(hypertrader.NewServiceWithProvider(store, provider)).RegisterRoutes(router)
+	hypertrader.NewHandler(hypertrader.NewServiceWithProviderAndSigner(store, provider, agentSigner)).RegisterRoutes(router)
 	if streamSvc != nil {
 		streambridge.NewHandler(streamSvc).RegisterRoutes(router)
 	}

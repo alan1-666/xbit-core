@@ -164,6 +164,7 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 			Cloid:           stringValue(input, "cloid"),
 			Symbol:          stringValue(input, "symbol"),
 			ExchangePayload: asMap(input["exchangePayload"]),
+			ExchangeAction:  asMap(input["exchangeAction"]),
 		})
 		if err != nil {
 			return nil, err
@@ -190,6 +191,7 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 			Leverage:        intValue(input, 5, "leverage"),
 			IsCross:         boolValue(input, true, "isCross"),
 			ExchangePayload: asMap(input["exchangePayload"]),
+			ExchangeAction:  asMap(input["exchangeAction"]),
 		})
 		if err != nil {
 			return nil, err
@@ -321,6 +323,23 @@ func (h *Handler) executeGraphQL(r *http.Request, operation string, variables ma
 			return nil, err
 		}
 		return map[string]any{graphQLOperationKey(operation): result}, nil
+	case "listhyperliquidagentwallets":
+		wallets, err := h.service.AgentWallets(ctx, stringValue(input, "userAddress"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"listHyperLiquidAgentWallets": wallets}, nil
+	case "activatehyperliquidagentwallet":
+		wallet, err := h.service.ActivateAgentWallet(ctx, ActivateAgentWalletInput{
+			UserID:       stringValue(input, "userId"),
+			UserAddress:  stringValue(input, "userAddress"),
+			AgentAddress: stringValue(input, "agentAddress"),
+			Status:       stringValue(input, "status"),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"activateHyperLiquidAgentWallet": wallet}, nil
 	case "approvewithdrawhyperliquid":
 		return map[string]any{"approveWithdrawHyperLiquid": map[string]any{"signedTransaction": "0xsigned-local-hyperliquid-withdraw"}}, nil
 	case "createfundingswap":
@@ -344,7 +363,7 @@ func inferOperationName(operationName string, query string) string {
 	if strings.TrimSpace(operationName) != "" {
 		return strings.TrimSpace(operationName)
 	}
-	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "GetHyperLiquidOpenOrders", "GetOpenOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "GetHyperLiquidOrderStatus", "SyncHyperLiquidOrderStatus", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
+	known := []string{"GetFavoriteSymbols", "GetSymbolList", "UpsertFavoriteSymbol", "UpdateFavoriteSymbolOrder", "GetCategory", "GetUserSymbolPreference", "UpdateUserSymbolPreference", "SearchSymbol", "GetPopularSymbol", "GetNewSymbol", "GenerateCloid", "LogTransaction", "GetBanners", "RouteBanner", "GetHotSearchs", "GetUserBalance", "GetUserPrevDayBalance", "GetUserPosition", "GetUserTradeHistory", "GetHyperLiquidOrders", "GetFutureOrders", "GetHyperLiquidOpenOrders", "GetOpenOrders", "CreateHyperLiquidOrder", "SubmitHyperLiquidOrder", "CancelHyperLiquidOrder", "GetHyperLiquidOrderStatus", "SyncHyperLiquidOrderStatus", "UpdateHyperLiquidLeverage", "GetFundingRates", "GetHyperLiquidAuditEvents", "GetFirstDepositUSDC", "CheckUserDeprecatedAsset", "ConfirmAssetBackup", "GetActiveSmartMoney", "GetRecentActiveSmartMoney", "GetMyFollowedSmartMoney", "GetTraderTagDefinitions", "GetTraderTagsByAddress", "AnalyzeSmartMoneyStrategy", "GetFollowerCount", "GetSmartMoneyRoi", "GetSmartMoneyMetrics30d", "GetUserPositionHoldingTime", "GetTradingSession", "ListAddressGroups", "CreateAddressGroup", "UpdateAddressGroup", "DeleteAddressGroup", "ListAddresses", "CreateAddress", "BatchCreateAddresses", "ImportAddresses", "UpdateAddress", "UpdateAddressGroupsForAddress", "BatchUpdateAddressGroups", "DeleteAddress", "GetFlowAddressOngroup", "GetAddress", "GetFollowedAddressesPositions", "GetFollowedAddressesLatestPositions", "CheckHyperLiquidWallet", "updateHyperLiquidWallet", "signHyperLiquidCancelOrder", "signHyperLiquidCreateOrder", "signHyperLiquidUpdateLeverage", "approveHyperLiquidApproveAgent", "approveHyperLiquidFeeBuilder", "ListHyperLiquidAgentWallets", "ActivateHyperLiquidAgentWallet", "ApproveWithdrawHyperLiquid", "CreateFundingSwap", "CreateFutureTransaction"}
 	for _, name := range known {
 		if strings.Contains(query, name) {
 			return name
@@ -389,6 +408,10 @@ func graphQLOperationKey(operation string) string {
 		return "approveHyperLiquidApproveAgent"
 	case "approvehyperliquidfeebuilder":
 		return "approveHyperLiquidFeeBuilder"
+	case "listhyperliquidagentwallets":
+		return "listHyperLiquidAgentWallets"
+	case "activatehyperliquidagentwallet":
+		return "activateHyperLiquidAgentWallet"
 	default:
 		if operation == "" {
 			return operation
@@ -606,6 +629,7 @@ func createOrderInputFromMap(input map[string]any) CreateOrderInput {
 		ReduceOnly:      boolValue(input, false, "reduceOnly"),
 		TimeInForce:     stringValue(input, "timeInForce", "tif"),
 		ExchangePayload: asMap(input["exchangePayload"]),
+		ExchangeAction:  asMap(input["exchangeAction"]),
 		RawPayload:      input,
 	}
 }

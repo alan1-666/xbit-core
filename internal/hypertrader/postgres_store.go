@@ -6,6 +6,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -633,6 +634,120 @@ func (s *PostgresStore) UpdateOrderStatusByProvider(ctx context.Context, input O
 	return nil
 }
 
+func (s *PostgresStore) SaveAgentWallet(ctx context.Context, wallet AgentWallet) (AgentWallet, error) {
+	if wallet.ID == "" {
+		wallet.ID = uuid.NewString()
+	}
+	if wallet.Status == "" {
+		wallet.Status = "pending_approval"
+	}
+	if wallet.Policy.MaxLeverage == 0 {
+		wallet.Policy.MaxLeverage = 20
+	}
+	if wallet.CreatedAt.IsZero() {
+		wallet.CreatedAt = time.Now().UTC()
+	}
+	policy, err := json.Marshal(wallet.Policy)
+	if err != nil {
+		return AgentWallet{}, fmt.Errorf("marshal agent policy: %w", err)
+	}
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO hyper_agent_wallets (id, user_id, user_address, agent_address, agent_name, status, key_ref, policy, created_at, updated_at, approved_at)
+		VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, NULLIF($7, ''), $8, $9, now(), $10)
+		ON CONFLICT (user_address, agent_address)
+		DO UPDATE SET user_id = EXCLUDED.user_id, agent_name = EXCLUDED.agent_name, status = EXCLUDED.status, key_ref = EXCLUDED.key_ref, policy = EXCLUDED.policy, updated_at = now(), approved_at = EXCLUDED.approved_at
+		RETURNING id::text, COALESCE(user_id, ''), user_address, agent_address, agent_name, status, COALESCE(key_ref, ''), policy, created_at, updated_at, approved_at
+	`, wallet.ID, wallet.UserID, strings.ToLower(strings.TrimSpace(wallet.UserAddress)), strings.ToLower(strings.TrimSpace(wallet.AgentAddress)), wallet.AgentName, wallet.Status, wallet.KeyRef, policy, wallet.CreatedAt, wallet.ApprovedAt).Scan(
+		&wallet.ID, &wallet.UserID, &wallet.UserAddress, &wallet.AgentAddress, &wallet.AgentName, &wallet.Status, &wallet.KeyRef, &policy, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.ApprovedAt,
+	)
+	if err != nil {
+		return AgentWallet{}, fmt.Errorf("save agent wallet: %w", err)
+	}
+	_ = json.Unmarshal(policy, &wallet.Policy)
+	return wallet, nil
+}
+
+func (s *PostgresStore) ListAgentWallets(ctx context.Context, userAddress string) ([]AgentWallet, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, COALESCE(user_id, ''), user_address, agent_address, agent_name, status, COALESCE(key_ref, ''), policy, created_at, updated_at, approved_at
+		FROM hyper_agent_wallets
+		WHERE lower(user_address) = lower($1)
+		ORDER BY updated_at DESC
+	`, strings.TrimSpace(userAddress))
+	if err != nil {
+		return nil, fmt.Errorf("list agent wallets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]AgentWallet, 0)
+	for rows.Next() {
+		wallet, err := scanAgentWallet(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, wallet)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) GetActiveAgentWallet(ctx context.Context, userAddress string) (AgentWallet, error) {
+	wallet, err := scanAgentWallet(s.pool.QueryRow(ctx, `
+		SELECT id::text, COALESCE(user_id, ''), user_address, agent_address, agent_name, status, COALESCE(key_ref, ''), policy, created_at, updated_at, approved_at
+		FROM hyper_agent_wallets
+		WHERE lower(user_address) = lower($1) AND status = 'active'
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, strings.TrimSpace(userAddress)))
+	if stderrors.Is(err, pgx.ErrNoRows) {
+		return AgentWallet{}, ErrNotFound
+	}
+	if err != nil {
+		return AgentWallet{}, fmt.Errorf("get active agent wallet: %w", err)
+	}
+	return wallet, nil
+}
+
+func (s *PostgresStore) UpdateAgentWalletStatus(ctx context.Context, userAddress string, agentAddress string, status string) (AgentWallet, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "active"
+	}
+	wallet, err := scanAgentWallet(s.pool.QueryRow(ctx, `
+		UPDATE hyper_agent_wallets
+		SET status = $3,
+		    approved_at = CASE WHEN $3 = 'active' THEN COALESCE(approved_at, now()) ELSE approved_at END,
+		    updated_at = now()
+		WHERE lower(user_address) = lower($1) AND lower(agent_address) = lower($2)
+		RETURNING id::text, COALESCE(user_id, ''), user_address, agent_address, agent_name, status, COALESCE(key_ref, ''), policy, created_at, updated_at, approved_at
+	`, strings.TrimSpace(userAddress), strings.TrimSpace(agentAddress), status))
+	if stderrors.Is(err, pgx.ErrNoRows) {
+		return AgentWallet{}, ErrNotFound
+	}
+	if err != nil {
+		return AgentWallet{}, fmt.Errorf("update agent wallet status: %w", err)
+	}
+	return wallet, nil
+}
+
+func (s *PostgresStore) NextAgentNonce(ctx context.Context, agentAddress string, now time.Time) (int64, error) {
+	agentAddress = strings.ToLower(strings.TrimSpace(agentAddress))
+	if agentAddress == "" {
+		return 0, fmt.Errorf("agentAddress is required")
+	}
+	requested := now.UnixMilli()
+	var nonce int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO hyper_agent_nonces (agent_address, last_nonce, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (agent_address)
+		DO UPDATE SET last_nonce = GREATEST(hyper_agent_nonces.last_nonce + 1, EXCLUDED.last_nonce), updated_at = now()
+		RETURNING last_nonce
+	`, agentAddress, requested).Scan(&nonce)
+	if err != nil {
+		return 0, fmt.Errorf("next agent nonce: %w", err)
+	}
+	return nonce, nil
+}
+
 func (s *PostgresStore) getAddress(ctx context.Context, id string) (Address, error) {
 	address, err := scanAddress(s.pool.QueryRow(ctx, `
 		SELECT id, address, remark_name, group_ids, COALESCE(owner_user_id, ''), user_address, profit_1d::text, profit_7d::text, profit_30d::text, created_at, updated_at
@@ -699,6 +814,17 @@ func scanAddress(row rowScanner) (Address, error) {
 	return address, nil
 }
 
+func scanAgentWallet(row rowScanner) (AgentWallet, error) {
+	var wallet AgentWallet
+	var policy []byte
+	err := row.Scan(&wallet.ID, &wallet.UserID, &wallet.UserAddress, &wallet.AgentAddress, &wallet.AgentName, &wallet.Status, &wallet.KeyRef, &policy, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.ApprovedAt)
+	if err != nil {
+		return AgentWallet{}, err
+	}
+	_ = json.Unmarshal(policy, &wallet.Policy)
+	return wallet, nil
+}
+
 func scanFuturesOrder(row rowScanner) (FuturesOrder, error) {
 	var order FuturesOrder
 	var rawPayload []byte
@@ -744,3 +870,4 @@ func decimal(value string) string {
 
 var _ Store = (*PostgresStore)(nil)
 var _ StateStore = (*PostgresStore)(nil)
+var _ AgentStore = (*PostgresStore)(nil)
