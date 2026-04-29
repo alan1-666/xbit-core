@@ -1,0 +1,351 @@
+package hypertrader
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Service struct {
+	store    Store
+	provider Provider
+	now      func() time.Time
+}
+
+func NewService(store Store) *Service {
+	return NewServiceWithProvider(store, nil)
+}
+
+func NewServiceWithProvider(store Store, provider Provider) *Service {
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	if provider == nil {
+		provider = NewLocalProvider()
+	}
+	return &Service{store: store, provider: provider, now: time.Now}
+}
+
+func (s *Service) ListSymbols(ctx context.Context, query string, category string, limit int) ([]Symbol, error) {
+	return s.store.ListSymbols(ctx, query, category, limit)
+}
+
+func (s *Service) GetSymbolPreference(ctx context.Context, userID string, symbol string) (SymbolPreference, error) {
+	return s.store.GetPreference(ctx, userID, symbol)
+}
+
+func (s *Service) UpdateSymbolPreference(ctx context.Context, pref SymbolPreference) (SymbolPreference, error) {
+	if strings.TrimSpace(pref.Symbol) == "" {
+		return SymbolPreference{}, fmt.Errorf("symbol is required")
+	}
+	return s.store.SavePreference(ctx, pref)
+}
+
+func (s *Service) Account(ctx context.Context, userAddress string) (AccountBalance, error) {
+	if strings.TrimSpace(userAddress) != "" {
+		account, err := s.provider.Account(ctx, userAddress)
+		if err == nil && (account.Balance != "" || len(account.Positions) > 0) {
+			return account, nil
+		}
+	}
+	symbols, err := s.store.ListSymbols(ctx, "", "", 2)
+	if err != nil {
+		return AccountBalance{}, err
+	}
+	positions := make([]Position, 0, len(symbols))
+	for i, symbol := range symbols {
+		side := "long"
+		if i%2 == 1 {
+			side = "short"
+		}
+		positions = append(positions, seedPosition(userAddress, symbol, side, s.now().UTC()))
+	}
+	return AccountBalance{
+		Balance:             "250000",
+		OneDayChange:        "2180",
+		OneDayPercentChange: "0.87",
+		RawUSD:              "250000",
+		Positions:           positions,
+	}, nil
+}
+
+func (s *Service) TradeHistory(_ context.Context) []TradeHistory {
+	now := s.now().UTC()
+	return []TradeHistory{
+		{Symbol: "BTC", Time: now.Add(-15 * time.Minute).Unix(), PnL: "830", PnLPercent: "0.024", Dir: "Close Long", Hash: "0xfuture1", Oid: 1001, Px: "95200", StartPosition: "0.2", Sz: "0.2", Fee: "1.2", FeeToken: "USDC", Tid: 501},
+		{Symbol: "ETH", Time: now.Add(-45 * time.Minute).Unix(), PnL: "-120", PnLPercent: "-0.006", Dir: "Close Short", Hash: "0xfuture2", Oid: 1002, Px: "3200.5", StartPosition: "4", Sz: "4", Fee: "0.8", FeeToken: "USDC", Tid: 502},
+	}
+}
+
+func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (FuturesOrder, error) {
+	order, err := s.normalizeOrder(input)
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	created, err := s.store.CreateOrder(ctx, order)
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	if created.ID != order.ID || created.ProviderOrderID != "" || created.Status != "pending" {
+		return created, nil
+	}
+	result, err := s.provider.SubmitOrder(ctx, created)
+	if err != nil {
+		_, _ = s.audit(ctx, created.UserID, created.UserAddress, "hyperliquid.order_submit_failed", "high", map[string]any{"orderId": created.ID, "error": err.Error()})
+		return FuturesOrder{}, err
+	}
+	submittedAt := result.SubmittedAt
+	updated, err := s.store.UpdateOrder(ctx, FuturesOrder{
+		ID:              created.ID,
+		Status:          "submitted",
+		Provider:        result.Provider,
+		ProviderOrderID: result.RequestID,
+		ResponsePayload: providerResultPayload(result),
+		SubmittedAt:     &submittedAt,
+	})
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	_, _ = s.audit(ctx, updated.UserID, updated.UserAddress, "hyperliquid.order_submitted", "high", map[string]any{"orderId": updated.ID, "symbol": updated.Symbol, "side": updated.Side, "size": updated.Size, "providerOrderId": updated.ProviderOrderID})
+	return updated, nil
+}
+
+func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) (FuturesOrder, error) {
+	if strings.TrimSpace(input.OrderID) == "" {
+		return FuturesOrder{}, fmt.Errorf("orderId is required")
+	}
+	order, err := s.store.GetOrder(ctx, input.OrderID)
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	input.UserID = firstNonEmpty(input.UserID, order.UserID)
+	input.UserAddress = firstNonEmpty(input.UserAddress, order.UserAddress)
+	input.Symbol = firstNonEmpty(input.Symbol, order.Symbol)
+	input.Cloid = firstNonEmpty(input.Cloid, order.Cloid)
+	result, err := s.provider.CancelOrder(ctx, input)
+	if err != nil {
+		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.order_cancel_failed", "high", map[string]any{"orderId": input.OrderID, "error": err.Error()})
+		return FuturesOrder{}, err
+	}
+	cancelledAt := result.SubmittedAt
+	updated, err := s.store.UpdateOrder(ctx, FuturesOrder{
+		ID:              order.ID,
+		Status:          "cancelled",
+		Provider:        result.Provider,
+		ProviderOrderID: firstNonEmpty(order.ProviderOrderID, result.RequestID),
+		ResponsePayload: providerResultPayload(result),
+		CancelledAt:     &cancelledAt,
+	})
+	if err != nil {
+		return FuturesOrder{}, err
+	}
+	_, _ = s.audit(ctx, updated.UserID, updated.UserAddress, "hyperliquid.order_cancelled", "high", map[string]any{"orderId": updated.ID, "providerOrderId": updated.ProviderOrderID})
+	return updated, nil
+}
+
+func (s *Service) Orders(ctx context.Context, filter OrderFilter) ([]FuturesOrder, error) {
+	return s.store.ListOrders(ctx, filter)
+}
+
+func (s *Service) UpdateLeverage(ctx context.Context, input UpdateLeverageInput) (ProviderActionResult, error) {
+	input.Symbol = strings.ToUpper(strings.TrimSpace(input.Symbol))
+	if input.Symbol == "" {
+		return ProviderActionResult{}, fmt.Errorf("symbol is required")
+	}
+	if input.Leverage <= 0 || input.Leverage > 100 {
+		return ProviderActionResult{}, fmt.Errorf("leverage must be between 1 and 100")
+	}
+	result, err := s.provider.UpdateLeverage(ctx, input)
+	if err != nil {
+		_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.update_leverage_failed", "high", map[string]any{"symbol": input.Symbol, "error": err.Error()})
+		return ProviderActionResult{}, err
+	}
+	_, _ = s.audit(ctx, input.UserID, input.UserAddress, "hyperliquid.update_leverage", "high", map[string]any{"symbol": input.Symbol, "leverage": input.Leverage, "isCross": input.IsCross, "requestId": result.RequestID})
+	return result, nil
+}
+
+func (s *Service) FundingRates(ctx context.Context, symbol string, limit int) ([]FundingRate, error) {
+	return s.provider.FundingRates(ctx, symbol, limit)
+}
+
+func (s *Service) AuditEvents(ctx context.Context, userID string, limit int) ([]AuditEvent, error) {
+	return s.store.ListAuditEvents(ctx, userID, limit)
+}
+
+func (s *Service) SmartMoney(ctx context.Context, limit int) ([]SmartMoneyTrader, error) {
+	return s.store.ListSmartMoney(ctx, limit)
+}
+
+func (s *Service) Groups(ctx context.Context, userID string) ([]AddressGroup, error) {
+	return s.store.ListGroups(ctx, userID)
+}
+
+func (s *Service) CreateGroup(ctx context.Context, name string, userID string, isDefault bool) (AddressGroup, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return AddressGroup{}, fmt.Errorf("group name is required")
+	}
+	return s.store.CreateGroup(ctx, AddressGroup{Name: name, UserID: userID, IsDefault: isDefault})
+}
+
+func (s *Service) UpdateGroup(ctx context.Context, id string, name string, isDefault bool, order int) (AddressGroup, error) {
+	if strings.TrimSpace(id) == "" {
+		return AddressGroup{}, fmt.Errorf("group id is required")
+	}
+	return s.store.UpdateGroup(ctx, AddressGroup{ID: id, Name: name, IsDefault: isDefault, Order: order})
+}
+
+func (s *Service) DeleteGroup(ctx context.Context, id string) error {
+	return s.store.DeleteGroup(ctx, id)
+}
+
+func (s *Service) Addresses(ctx context.Context, groupID string) ([]Address, error) {
+	return s.store.ListAddresses(ctx, groupID)
+}
+
+func (s *Service) CreateAddress(ctx context.Context, address string, remarkName string, groupIDs []string, userID string) (Address, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return Address{}, fmt.Errorf("address is required")
+	}
+	if len(groupIDs) == 0 {
+		groupIDs = []string{"default"}
+	}
+	return s.store.CreateAddress(ctx, Address{Address: address, RemarkName: remarkName, GroupIDs: groupIDs, OwnerUserID: userID, UserAddress: address, Profit1d: "0", Profit7d: "0", Profit30d: "0"})
+}
+
+func (s *Service) UpdateAddress(ctx context.Context, id string, remarkName string, groupIDs []string) (Address, error) {
+	if strings.TrimSpace(id) == "" {
+		return Address{}, fmt.Errorf("address id is required")
+	}
+	return s.store.UpdateAddress(ctx, Address{ID: id, RemarkName: remarkName, GroupIDs: groupIDs})
+}
+
+func (s *Service) DeleteAddress(ctx context.Context, id string) error {
+	return s.store.DeleteAddress(ctx, id)
+}
+
+func (s *Service) WalletStatus(ctx context.Context, userAddress string) (HyperliquidWalletStatus, error) {
+	return s.provider.WalletStatus(ctx, userAddress)
+}
+
+func (s *Service) Sign(ctx context.Context, userID string, userAddress string, action string, payload map[string]any) (map[string]any, error) {
+	if userID == "" {
+		userID = "local-user"
+	}
+	result, err := s.provider.Sign(ctx, action, userID, payload)
+	if err != nil {
+		_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.sign_failed", "high", map[string]any{"action": action, "error": err.Error()})
+		return nil, err
+	}
+	_, _ = s.audit(ctx, userID, userAddress, "hyperliquid.sign", "high", map[string]any{"action": action, "requestId": result.RequestID})
+	return map[string]any{
+		"signature": result.Signature,
+		"userId":    userID,
+		"provider":  result.Provider,
+		"requestId": result.RequestID,
+	}, nil
+}
+
+func (s *Service) GenerateCloid(count int) map[string]any {
+	if count <= 0 || count > 20 {
+		count = 1
+	}
+	cloids := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		cloids = append(cloids, uuid.NewString())
+	}
+	return map[string]any{"count": count, "cloids": cloids}
+}
+
+func seedPosition(address string, symbol Symbol, side string, now time.Time) Position {
+	positionType := "long"
+	szi := "0.2"
+	if side == "short" {
+		positionType = "short"
+		szi = "-4"
+	}
+	return Position{
+		Address: address, Coin: symbol.Symbol, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now, PositionType: positionType, Szi: szi,
+		LeverageType: "cross", LeverageValue: 5, EntryPx: symbol.CurrentPrice, PositionValue: "25000", UnrealizedPnl: "420",
+		ReturnOnEquity: "0.084", LiquidationPx: "0", MarginUsed: "5000", MaxLeverage: symbol.MaxLeverage, OpenTime: now.Add(-2 * time.Hour).Unix(),
+		CumFundingAllTime: "12", CumFundingSinceOpen: "3", CumFundingSinceChange: "1", AccountValue: "250000", CrossMaintenanceMarginUsed: "1200", CrossMarginRatio: "0.12",
+		Side: side, Time: now.Unix(), StartPosition: "0", Dir: "Open " + strings.Title(side), ClosedPnl: "0", Hash: "0xposition", Oid: 100, Tid: 200, Crossed: true, Fee: "0.4", TwapID: "",
+	}
+}
+
+func (s *Service) normalizeOrder(input CreateOrderInput) (FuturesOrder, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(input.Symbol))
+	side := strings.ToLower(strings.TrimSpace(input.Side))
+	orderType := strings.ToLower(strings.TrimSpace(input.OrderType))
+	size := strings.TrimSpace(input.Size)
+	if symbol == "" {
+		return FuturesOrder{}, fmt.Errorf("symbol is required")
+	}
+	if side != "buy" && side != "sell" && side != "long" && side != "short" {
+		return FuturesOrder{}, fmt.Errorf("side must be buy, sell, long or short")
+	}
+	if orderType == "" {
+		orderType = "market"
+	}
+	if size == "" {
+		return FuturesOrder{}, fmt.Errorf("size is required")
+	}
+	now := s.now().UTC()
+	payload := input.RawPayload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if len(input.ExchangePayload) > 0 {
+		payload["exchangePayload"] = input.ExchangePayload
+	}
+	return FuturesOrder{
+		ID:              uuid.NewString(),
+		UserID:          strings.TrimSpace(input.UserID),
+		UserAddress:     strings.TrimSpace(input.UserAddress),
+		Symbol:          symbol,
+		Side:            side,
+		OrderType:       orderType,
+		Price:           strings.TrimSpace(input.Price),
+		Size:            size,
+		Status:          "pending",
+		Cloid:           strings.TrimSpace(input.Cloid),
+		Provider:        s.provider.Name(),
+		ClientRequestID: strings.TrimSpace(input.ClientRequestID),
+		ReduceOnly:      input.ReduceOnly,
+		TimeInForce:     strings.TrimSpace(input.TimeInForce),
+		RawPayload:      payload,
+		ResponsePayload: map[string]any{},
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, nil
+}
+
+func (s *Service) audit(ctx context.Context, userID string, userAddress string, action string, riskLevel string, payload map[string]any) (AuditEvent, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return s.store.AppendAuditEvent(ctx, AuditEvent{
+		UserID:      strings.TrimSpace(userID),
+		UserAddress: strings.TrimSpace(userAddress),
+		Action:      action,
+		RiskLevel:   riskLevel,
+		Payload:     payload,
+		CreatedAt:   s.now().UTC(),
+	})
+}
+
+func providerResultPayload(result ProviderActionResult) map[string]any {
+	return map[string]any{
+		"action":      result.Action,
+		"provider":    result.Provider,
+		"requestId":   result.RequestID,
+		"status":      result.Status,
+		"signature":   result.Signature,
+		"submittedAt": result.SubmittedAt,
+		"rawPayload":  result.RawPayload,
+	}
+}
